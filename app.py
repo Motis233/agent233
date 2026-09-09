@@ -30,14 +30,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 这里把云端 secrets 值同步到环境变量，让 config.py 用同一套
 # os.environ 读取逻辑就能拿到值，无需改 config.py
 try:
-    # 只同步未在环境中已有的键（本地环境变量优先级更高）
     _keys_to_sync = ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
                      "S2_API_KEY", "APP_PASSWORD"]
     for _k in _keys_to_sync:
         if _k not in os.environ and _k in st.secrets:
             os.environ[_k] = st.secrets[_k]
-except st.errors.StreamlitAPIException:
-    # 没有 secrets 文件时（本地开发场景）静默跳过
+except Exception:
+    # 没有 secrets 文件 / 本地开发 / 任何原因异常 → 静默跳过
+    # 密码门会直接查 st.secrets 做兜底，同步失败不影响密码门
     pass
 
 import config
@@ -60,8 +60,17 @@ st.set_page_config(
 # ---------------------------------------------------------------
 # 部署到公网时，陌生访客必须先输密码才能用——否则他们随手点一下
 # 「完整运行」就会触发流水线，消耗你的 LLM API 额度（一次几十次调用）
-# 密码从环境变量 APP_PASSWORD 读取（本地开发留空 = 不启用）
-if config.APP_PASSWORD:
+# 密码来源（优先级从高到低）:
+#   1. config.APP_PASSWORD（本地 .env 或环境变量）
+#   2. st.secrets["APP_PASSWORD"]（Streamlit Cloud / HF Spaces 平台 Secrets）
+try:
+    _pwd = config.APP_PASSWORD or (
+        st.secrets.get("APP_PASSWORD", "") if "APP_PASSWORD" in st.secrets else ""
+    )
+except Exception:
+    _pwd = config.APP_PASSWORD
+
+if _pwd:
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
@@ -87,7 +96,7 @@ if config.APP_PASSWORD:
             submitted = st.form_submit_button("登录", type="primary",
                                               use_container_width=True)
             if submitted:
-                if pwd == config.APP_PASSWORD:
+                if pwd == _pwd:
                     st.session_state.authenticated = True
                     st.rerun()
                 else:
