@@ -1,0 +1,39 @@
+# ===============================================================
+# .gitignore —— Git 忽略清单
+# ===============================================================
+# 原则: 只提交代码和配置模板，运行时产物和密钥一律排除
+# 注意: git不支持行内注释，注释必须独占一行
+
+# ---- 密钥与本地配置（绝不提交！）----
+.env
+*.key
+
+# ---- 运行时数据（可由流水线重新生成）----
+# papers/ = 下载的论文PDF（717MB+，GitHub单文件限100MB）
+# data/   = 证据库JSON（papers_meta/paper_cards/review_results等）
+# output/ = 综合Agent产出（综述报告/表格/图谱）
+# evidence/ = 证据链高亮截图缓存
+papers/
+data/
+output/
+evidence/
+
+# ---- Python 运行时 ----
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ---- IDE / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---- 临时诊断文件 ----
+oa_status.txt
+*.log
+
+# 本地测试脚本（开发期调试用，不入仓库）
+test_*.py

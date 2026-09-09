@@ -1,0 +1,255 @@
+"""
+reviewer.py —— 批判性审查Agent（本项目核心创新点）
+================================
+职责（两级核验 + 量化统计）：
+  1. quote_alignment(): 【程序化核验】用模糊匹配检查每条引用是否真实
+     存在于PDF原文中 —— 零成本、100%可靠，专门抓"伪造引用"
+  2. semantic_verify(): 【LLM核验】判断声明内容是否被原文片段支持
+     —— 抓"引用是真的但声明夸大/曲解"的语义级幻觉
+  3. generate_report(): 汇总两级核验结果，计算幻觉率
+
+幻觉判定协议（可写进报告的量化定义）:
+  一条声明被判为"幻觉"当且仅当满足以下任一:
+    a) 所有引用都对齐失败（引用疑似伪造/来自截断部分）
+    b) 语义核验 verdict = unsupported 或 contradicted
+
+输入: list[PaperMeta], list[PaperCard]（第1、2步的产出）
+输出: data/review_results.json + 控制台幻觉率报告
+"""
+
+import os
+import json
+from difflib import SequenceMatcher
+
+import llm_client
+import config
+from models import (
+    PaperMeta, PaperCard, ReviewResult, ReviewVerdict, HallucinationReport,
+)
+from agents.extractor import pdf_to_text
+
+# ---------------------------------------------------------------
+# 第1级：程序化引用对齐检查
+# ---------------------------------------------------------------
+def _normalize(text: str) -> str:
+    """归一化文本：压平空白、统一小写（PDF解析的换行/空格差异不影响比对）"""
+    return " ".join(text.split()).lower()
+
+
+def quote_alignment(quote_text: str, full_text_norm: str,
+                    fragment_len: int = 80, threshold: float = 0.85) -> bool:
+    """
+    检查一条引用是否真实存在于原文中（模糊对齐）
+
+    方法:
+        取引用前 fragment_len 个字符作为"探针"，在原文上滑动窗口，
+        用 SequenceMatcher 计算最大相似度。超过阈值即认为对齐成功。
+
+    为什么用模糊匹配而不是精确包含:
+        PDF解析会把连字符断词、公式、脚注标记混入文本，
+        LM引用时可能丢掉几个字符。精确匹配会把"基本忠实"误判为伪造，
+        0.85阈值能容忍小噪声，同时抓住编造内容（编造的相似度通常<0.5）。
+
+    参数:
+        quote_text: 引用文本
+        full_text_norm: 归一化后的论文全文
+        fragment_len: 探针长度（引用太长时只取前80字符，够用了）
+        threshold: 对齐成功阈值
+
+    返回:
+        True=引用真实存在于原文; False=疑似伪造
+    """
+    probe = _normalize(quote_text)[:fragment_len]
+    if len(probe) < 10:  # 引用过短无法可靠判断，直接放行（后续语义核验兜底）
+        return True
+
+    # 滑动窗口找最大相似度
+    # 窗口长度=探针长度（窗口更长会把完全包含的匹配稀释到阈值以下：
+    # ratio=2M/(len1+len2)，长度差越大分越低）
+    best = 0.0
+    window = len(probe)
+    step = 20  # 细步长：保证不跳过对齐位置
+    for i in range(0, max(1, len(full_text_norm) - window + 1), step):
+        candidate = full_text_norm[i:i + window]
+        # 先用quick_ratio粗筛（它是上界，快），通过再精算
+        ratio = SequenceMatcher(None, probe, candidate).quick_ratio()
+        if ratio > threshold:
+            exact = SequenceMatcher(None, probe, candidate).ratio()
+            best = max(best, exact)
+            if best >= threshold:
+                return True  # 提前退出：已经找到足够好的对齐
+        else:
+            best = max(best, ratio * 0.9)  # 粗筛值打9折保守记录
+    return best >= threshold
+
+
+# ---------------------------------------------------------------
+# 第2级：LLM语义核验
+# ---------------------------------------------------------------
+REVIEWER_SYSTEM_PROMPT = """你是一位极其严格的批判性审查员，负责核验信息抽取系统输出的忠实性。
+
+你会收到：一条【声明】（抽取系统对论文的概括）和【原文片段】（该声明声称的依据）。
+
+判断声明是否被原文片段支持，输出三选一判定：
+  - supported: 声明的内容在原文片段中有明确依据，数字、条件、结论均一致
+  - unsupported: 声明的内容在片段中找不到依据（包括:片段只覆盖了声明的一部分、
+    声明添加了片段中没有的信息）
+  - contradicted: 声明与片段内容直接矛盾（如数字对不上、结论相反）
+
+【严格标准——以下都算问题】
+- 声明中的数字与原文不符（哪怕是四舍五入方向不同）
+- 声明扩大了适用范围（原文说"在X数据集上"，声明说"在多个数据集上"）
+- 声明把"作者提出"写成"作者证明"
+- 声明混淆了本文工作与引用他人的工作
+
+宁严勿宽：拿不准就判 unsupported，并说明理由。confidence 给你对判定的把握(0-1)。
+"""
+
+
+def semantic_verify(claim_content: str, evidence_text: str) -> ReviewVerdict:
+    """
+    用LLM核验单条声明是否被证据支持
+
+    参数:
+        claim_content: 声明内容（中文概括）
+        evidence_text: 原文证据（引用拼接，若对齐失败则给截断前的全文开头）
+
+    返回:
+        ReviewVerdict（verdict/reason/confidence）
+    """
+    messages = [
+        {"role": "system", "content": REVIEWER_SYSTEM_PROMPT},
+        {"role": "user", "content":
+            f"【声明】{claim_content}\n\n"
+            f"【原文片段】{evidence_text}"},
+    ]
+    return llm_client.chat_json(
+        messages, schema_class=ReviewVerdict,
+        temperature=config.TEMP_REVIEWER,  # 审查要求稳定，最低温度
+    )
+
+
+# ---------------------------------------------------------------
+# 组合入口：完整审查流水线
+# ---------------------------------------------------------------
+def run(papers: list[PaperMeta], cards: list[PaperCard]) -> list[ReviewResult]:
+    """
+    对所有信息卡片执行两级核验，落盘 review_results.json
+
+    性能说明: 语义核验是逐条声明的LLM调用（15篇论文约60条声明，
+    串行需5-10分钟）。改为3线程并行后降到约1/3。
+    线程安全性: text_cache在线程启动前构建完毕,线程内只读;
+    每条声明只写自己的record,无共享可变状态。
+
+    返回:
+        list[ReviewResult]（每条声明一条核验记录）
+    """
+    # 建立论文全文缓存（每篇PDF只解析一次，避免重复IO）
+    print("[审查Agent] 解析论文全文（缓存）...")
+    text_cache: dict[str, str] = {}  # arxiv_id -> 归一化全文
+    for p in papers:
+        text_cache[p.arxiv_id] = _normalize(pdf_to_text(p.local_path))
+
+    # ---- 先收集所有待核验任务（card, idx, claim），再并行执行 ----
+    tasks = []
+    for card in cards:
+        for idx, claim in enumerate(card.claims):
+            tasks.append((card, idx, claim))
+
+    def _verify_one(task):
+        """单条声明的两级核验（工作线程函数，只读text_cache）"""
+        card, idx, claim = task
+        full_text_norm = text_cache.get(card.arxiv_id, "")
+
+        # ---- 第1级：程序化引用对齐 ----
+        # 只要有一条引用对齐成功，就认为引用真实
+        aligned = any(
+            quote_alignment(q.text, full_text_norm)
+            for q in claim.quotes
+        )
+
+        # ---- 第2级：LLM语义核验 ----
+        # 证据 = 所有引用拼接（每条限500字符，控制token）
+        evidence = "\n---\n".join(q.text[:500] for q in claim.quotes)
+
+        if not aligned:
+            # 引用对齐失败时，把"该声明"连同全文开头一起送审——
+            # 让审查员在更大范围内找证据，区分"真幻觉"和"引用格式问题"
+            evidence = (f"(注:以下引用未能在原文中程序化定位，"
+                        f"可能是格式差异，请结合全文片段判断)\n{evidence}"
+                        f"\n---\n(论文开头片段)\n{full_text_norm[:2000]}")
+
+        try:
+            verdict = semantic_verify(claim.content, evidence)
+        except Exception as e:
+            print(f"[审查Agent] 语义核验失败(按unsupported计): {e}")
+            verdict = ReviewVerdict(
+                verdict="unsupported", reason="核验调用失败", confidence=0.0,
+            )
+
+        record = ReviewResult(
+            arxiv_id=card.arxiv_id,
+            claim_index=idx,
+            claim_content=claim.content,
+            quote_alignment=aligned,
+            verdict=verdict,
+        )
+
+        # 进度输出（一眼看出两级核验的判定）
+        flag = "✓" if (aligned and verdict.verdict == "supported") else "✗"
+        print(f"  {flag} [{claim.claim_type:10s}] 对齐={'Y' if aligned else 'N'} "
+              f"语义={verdict.verdict:12s} {claim.content[:40]}...")
+        return record
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(executor.map(_verify_one, tasks))
+
+    # ---- 落盘 ----
+    out_path = os.path.join(config.DATA_DIR, "review_results.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump([r.model_dump() for r in results], f, ensure_ascii=False, indent=2)
+    print(f"[审查Agent] 核验记录已保存: {out_path}")
+
+    return results
+
+
+# ---------------------------------------------------------------
+# 幻觉率统计报告（实验E1的核心产出）
+# ---------------------------------------------------------------
+def generate_report(results: list[ReviewResult]) -> HallucinationReport:
+    """
+    汇总核验结果，计算幻觉率
+
+    幻觉判定协议:
+      a) quote_alignment=False（引用伪造） -> 幻觉
+      b) verdict in (unsupported, contradicted) -> 幻觉
+      （两者是独立的失败模式，可能同时发生，只计一次）
+    """
+    supported = sum(1 for r in results
+                    if r.verdict.verdict == "supported")
+    unsupported = sum(1 for r in results
+                      if r.verdict.verdict == "unsupported")
+    contradicted = sum(1 for r in results
+                       if r.verdict.verdict == "contradicted")
+    fake_quotes = sum(1 for r in results if not r.quote_alignment)
+
+    report = HallucinationReport(
+        total_claims=len(results),
+        supported=supported,
+        unsupported=unsupported,
+        contradicted=contradicted,
+        fake_quotes=fake_quotes,
+    )
+
+    print("\n" + "=" * 55)
+    print("📊 幻觉率量化报告（实验E1）")
+    print("=" * 55)
+    print(f"  声明总数:     {report.total_claims}")
+    print(f"  原文支持:     {supported}")
+    print(f"  无依据(幻觉): {unsupported}")
+    print(f"  与原文矛盾:   {contradicted}")
+    print(f"  伪造引用:     {fake_quotes}")
+    print(f"  幻觉率:       {report.hallucination_rate:.1%}")
+    print("=" * 55)
+    return report

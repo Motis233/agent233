@@ -1,0 +1,10 @@
+# literature_agent 依赖清单（conda环境: brain, Python 3.10）
+# 安装: pip install -r requirements.txt
+# 注意: openai/pydantic/networkx/requests 在brain环境中已存在
+
+PyMuPDF>=1.28        # PDF解析（模块名 pymupdf）
+arxiv>=4.0           # arXiv论文检索API
+pyvis>=0.3           # 引用图谱交互式可视化（依赖networkx）
+streamlit>=1.63      # Demo网页前端
+openai>=2.41         # LLM API调用（OpenAI兼容格式）
+pydantic>=2.13       # 结构化数据定义与校验

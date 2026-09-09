@@ -1,0 +1,9 @@
+# Streamlit 主题配置（锁定亮色主题，与app.py注入的CSS设计系统配套）
+# 教训(2026-09-08): 仅用CSS强制浅背景而不锁主题时，浏览器端若持久化了
+# 深色主题，文字仍是白色 -> 白字白底不可读。必须在theme里原生定义。
+[theme]
+base = "light"                # 锁定亮色基底，文字默认深色
+primaryColor = "#4F46E5"      # 主色: 靛蓝（按钮/链接/滑块/选中态）
+backgroundColor = "#F8FAFC"   # 页面背景: 浅灰蓝
+secondaryBackgroundColor = "#FFFFFF"  # 侧边栏/卡片/输入框背景: 纯白
+textColor = "#0F172A"         # 正文文字: 近黑
