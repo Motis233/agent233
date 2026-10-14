@@ -50,6 +50,7 @@ import requests
 
 import llm_client
 import config
+import budget
 import cache
 from models import SearchPlan, PaperMeta
 

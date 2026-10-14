@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import html as _htmllib
 import requests
+import budget
 from pydantic import BaseModel, Field
 
 import llm_client

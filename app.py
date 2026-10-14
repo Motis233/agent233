@@ -21,6 +21,16 @@ import time
 
 import streamlit as st
 
+# ---------------------------------------------------------------
+# 页面全局配置（必须是第一条Streamlit命令——secrets同步/密码门等
+# 任何st调用都排在它后面，否则触发StreamlitAPIException）
+# ---------------------------------------------------------------
+st.set_page_config(
+    page_title="科研文献整理Agent",
+    page_icon="📚",
+    layout="wide",
+)
+
 # 项目根目录加入path（streamlit的工作目录可能不同）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -30,31 +40,36 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 本地开发用 .env 文件，云端部署用平台 Secrets（st.secrets 读取）。
 # 这里把云端 secrets 值同步到环境变量，让 config.py 用同一套
 # os.environ 读取逻辑就能拿到值，无需改 config.py
-try:
-    _keys_to_sync = ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
-                     "S2_API_KEY", "APP_PASSWORD"]
-    for _k in _keys_to_sync:
-        if _k not in os.environ and _k in st.secrets:
-            os.environ[_k] = st.secrets[_k]
-except Exception:
-    # 没有 secrets 文件 / 本地开发 / 任何原因异常 → 静默跳过
-    # 密码门会直接查 st.secrets 做兜底，同步失败不影响密码门
-    pass
+def _secrets_file_exists() -> bool:
+    """提前探测secrets.toml是否存在——文件缺失时访问st.secrets
+    会向页面渲染警告（try/except拦不住），污染前端界面。"""
+    from pathlib import Path
+    candidates = [
+        Path.home() / ".streamlit" / "secrets.toml",
+        Path.cwd() / ".streamlit" / "secrets.toml",
+        Path(__file__).parent / ".streamlit" / "secrets.toml",
+    ]
+    return any(p.exists() for p in candidates)
+
+
+if _secrets_file_exists():
+    try:
+        _keys_to_sync = ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
+                         "S2_API_KEY", "APP_PASSWORD"]
+        for _k in _keys_to_sync:
+            if _k not in os.environ and _k in st.secrets:
+                os.environ[_k] = st.secrets[_k]
+    except Exception:
+        # secrets 读取异常 → 静默跳过
+        # 密码门会直接查 st.secrets 做兜底，同步失败不影响密码门
+        pass
 
 import config
+import budget
 from models import PaperMeta, PaperCard, ReviewResult
 
 # 证据图片目录（方案一：证据链穿透）
 EVIDENCE_DIR = os.path.join(config.PROJECT_ROOT, "evidence")
-
-# ---------------------------------------------------------------
-# 页面全局配置
-# ---------------------------------------------------------------
-st.set_page_config(
-    page_title="科研文献整理Agent",
-    page_icon="📚",
-    layout="wide",
-)
 
 # ---------------------------------------------------------------
 # 访问密码门（云端部署防护）
@@ -66,7 +81,8 @@ st.set_page_config(
 #   2. st.secrets["APP_PASSWORD"]（Streamlit Cloud / HF Spaces 平台 Secrets）
 try:
     _pwd = config.APP_PASSWORD or (
-        st.secrets.get("APP_PASSWORD", "") if "APP_PASSWORD" in st.secrets else ""
+        st.secrets.get("APP_PASSWORD", "")
+        if _secrets_file_exists() and "APP_PASSWORD" in st.secrets else ""
     )
 except Exception:
     _pwd = config.APP_PASSWORD
@@ -635,7 +651,7 @@ def evidence_popover(label: str, arxiv_id: str, claim_index: int,
         img_path = os.path.join(EVIDENCE_DIR, ev["image"])
         if os.path.exists(img_path):
             st.image(img_path, caption=f"PDF第{page}页 · 黄色高亮=证据原文",
-                     use_container_width=True)
+                     use_column_width=True)
         else:
             st.error(f"证据图片缺失: {ev['image']}")
         if quotes:
@@ -1415,7 +1431,7 @@ with tab8:
                                     st.image(_img,
                                              caption=f"第{_h['page'] + 1}页 · "
                                                      f"黄色高亮=关键词",
-                                             use_container_width=True)
+                                             use_column_width=True)
                                 _j1, _j2 = st.columns([1, 2])
                                 with _j1:
                                     if st.button("📄 跳转原文页",
@@ -1689,7 +1705,7 @@ with tab8:
                     _render_page(pdf_path, _jump_page),
                     caption=f"★ 跳转目标 · 第 {_jump_page + 1} 页 / "
                             f"共 {n_pages} 页 ★",
-                    use_container_width=True,
+                    use_column_width=True,
                 )
                 # 消费后清理跳转标记（刷新后不残留）
                 del st.session_state.pdf_jump_id
@@ -1715,7 +1731,7 @@ with tab8:
                 st.image(
                     _render_page(pdf_path, i),
                     caption=f"—— 第 {i + 1} 页 / 共 {n_pages} 页{_mark} ——",
-                    use_container_width=True,
+                    use_column_width=True,
                 )
                 # 该页笔记紧凑展示（引用+批注各一行）
                 for _pn2 in _pg_notes.get(i, [])[:3]:

@@ -88,7 +88,9 @@ OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output") # 综合Agent的产出目录(�
 # （2026-09-09实测踩坑: S2匿名模式持续429，密钥形同虚设）
 _env_file = os.path.join(PROJECT_ROOT, ".env")
 if os.path.exists(_env_file):
-    with open(_env_file, "r", encoding="utf-8") as f:
+    # utf-8-sig 自动剥离BOM——部分编辑器保存.env会带BOM，
+    # 导致首行键名变成"\ufeffLLM_API_KEY"而永远匹配失败
+    with open(_env_file, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             # 跳过注释行和空行
