@@ -122,14 +122,69 @@ class PaperCard(BaseModel):
 # 4. 审查Agent的输出：核验结果（★幻觉率量化实验的核心）
 # ===============================================================
 class ReviewVerdict(BaseModel):
-    """对单条声明的核验判定。"""
-    verdict: Literal["supported", "unsupported", "contradicted"] = Field(
-        description="supported=原文支持；unsupported=原文不支持；contradicted=与原文矛盾"
+    """对单条声明的核验判定。
+
+    abstained = 证据不足、暂缓判定（不等于幻觉，进入"暂缓"桶单独披露）。
+    """
+    verdict: Literal[
+        "supported", "unsupported", "contradicted", "abstained"
+    ] = Field(
+        description="supported=原文支持；unsupported=原文不支持；"
+                    "contradicted=与原文矛盾；abstained=证据不足暂缓判定"
     )
     reason: str = Field(description="一句话判定理由")
     confidence: float = Field(
         description="判定置信度0-1", ge=0.0, le=1.0,
     )
+
+
+class AtomicFactVerdict(BaseModel):
+    """原子事实核验记录：把声明拆成最小可判定单元后逐条判定。"""
+    fact: str = Field(description="从声明中拆出的单条原子事实")
+    verdict: Literal[
+        "supported", "unsupported", "contradicted", "abstained"
+    ] = Field(description="该原子事实的判定（含义同 ReviewVerdict.verdict）")
+    reason: str = Field(description="一句话判定理由")
+    confidence: float = Field(
+        description="判定置信度0-1", ge=0.0, le=1.0,
+    )
+
+
+class SemanticVerifyResult(BaseModel):
+    """语义核验的完整输出（原子事实拆分 + 程序化汇总）。
+
+    LLM只负责逐条原子事实判定；verdict 由 reviewer 按最坏非暂缓判定
+    程序化推导，保证与原子事实严格一致（防止模型自相矛盾）。
+    """
+    atomic_facts: list[AtomicFactVerdict] = Field(
+        description="从声明拆出的原子事实及逐条判定", min_length=1, max_length=6,
+    )
+    verdict: Literal[
+        "supported", "unsupported", "contradicted", "abstained"
+    ] = Field(description="汇总判定（程序会按原子事实重新推导覆盖此字段）")
+    reason: str = Field(description="一句话判定理由（针对声明整体）")
+    confidence: float = Field(
+        description="对声明整体判定的置信度0-1", ge=0.0, le=1.0,
+    )
+
+
+class QuoteMatchInfo(BaseModel):
+    """单条引用的对齐详情（阶段2：引用定位升级的产出）。
+
+    page 为 0-based 页码（与 evidence_locator 口径一致），None=无法定位页。
+    """
+    section: str = Field(default="", description="引用声称的出处位置")
+    aligned: bool = Field(description="该引用是否成功对齐到原文")
+    confidence: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="对齐置信度：精确匹配=1.0，模糊匹配=相似度比值",
+    )
+    matched_fragment: str | None = Field(
+        default=None, description="实际命中的原文片段（模糊匹配时与引用不同）")
+    page: int | None = Field(
+        default=None, ge=0, description="命中片段所在的0-based页码")
+    context: str | None = Field(
+        default=None, description="命中位置前后各约100字符的上下文")
 
 
 class ReviewResult(BaseModel):
@@ -153,11 +208,29 @@ class ReviewResult(BaseModel):
     hallucination: bool = Field(
         default=False, description="按统一协议，该声明是否判定为幻觉"
     )
-    failure_mode: Literal["none", "fake_quote", "unsupported", "contradicted", "mixed"] = Field(
-        default="none", description="失败模式，便于D Benchmark统计"
+    failure_mode: Literal[
+        "none", "fake_quote", "unsupported", "contradicted",
+        "mixed", "abstained", "llm_error",
+    ] = Field(
+        default="none",
+        description="失败模式。abstained=证据不足暂缓(非幻觉)；"
+                    "llm_error=核验调用失败(不计入幻觉)",
     )
     review_latency_ms: float | None = Field(
         default=None, ge=0, description="该声明两级核验耗时（毫秒）"
+    )
+    review_status: Literal["ok", "llm_error"] = Field(
+        default="ok",
+        description="核验过程状态。llm_error=LLM调用失败未完成语义判定，"
+                    "此时verdict仅为占位，统计中单列，绝不计为幻觉",
+    )
+    quote_details: list[QuoteMatchInfo] = Field(
+        default_factory=list,
+        description="每条引用的对齐详情（片段/置信度/页码/上下文）",
+    )
+    atomic_facts: list[AtomicFactVerdict] = Field(
+        default_factory=list,
+        description="原子事实拆分核验记录（语义核验升级的中间产物）",
     )
 
 
@@ -186,7 +259,13 @@ class BenchmarkResult(BaseModel):
 
 
 class BenchmarkReport(BaseModel):
-    """D Benchmark 汇总指标。"""
+    """D Benchmark 汇总指标。
+
+    统一指标定义（阶段4）:
+      - Precision/Recall/F1: 按三分类逐类计算，另给 Macro 平均
+      - 误放行率 false_pass_rate: 人工标注为"坏声明"(verdict!=supported
+        或 引用伪造)却被系统放行(verdict=supported且对齐成功)的比例
+    """
     total_cases: int
     verdict_correct: int
     alignment_correct: int
@@ -197,6 +276,16 @@ class BenchmarkReport(BaseModel):
     alignment_accuracy: float
     macro_f1: float
     results: list[BenchmarkResult] = Field(default_factory=list)
+    precision: dict[str, float] = Field(
+        default_factory=dict, description="逐类精确率")
+    recall: dict[str, float] = Field(
+        default_factory=dict, description="逐类召回率")
+    f1: dict[str, float] = Field(
+        default_factory=dict, description="逐类F1")
+    false_pass_rate: float = Field(
+        default=0.0, description="误放行率：坏声明被判定为通过的比例")
+    errored_cases: int = Field(
+        default=0, ge=0, description="LLM调用失败被跳过的样本数(不计入指标)")
 
 
 # ===============================================================
@@ -205,7 +294,13 @@ class BenchmarkReport(BaseModel):
 class HallucinationReport(BaseModel):
     """一轮实验的幻觉率统计报告。
 
-    hallucinations 使用“并集”计数：一条声明即使同时引用失败且语义失败，也只计一次。
+    统一指标定义（阶段1协议 v2）:
+      - 幻觉率 = hallucinations / total_claims
+        幻觉 = (所有引用未对齐) OR (语义判定 unsupported/contradicted)；
+        LLM调用失败与证据不足(abstained)的声明绝不计为幻觉。
+      - 引用对齐率 = 至少一条引用成功对齐的声明数 / total_claims
+      - 核验成功率 = 完成语义判定的声明数 / total_claims
+                    （= 1 - llm_errors/total，衡量核验管线自身的可靠性）
     """
     total_claims: int = Field(description="送审的声明总数")
     supported: int = Field(description="语义判定为原文支持的条数")
@@ -218,6 +313,10 @@ class HallucinationReport(BaseModel):
     aligned_quotes: int | None = Field(
         default=None, ge=0, description="至少一条引用成功对齐的声明数"
     )
+    llm_errors: int = Field(
+        default=0, ge=0, description="LLM调用失败、未完成语义判定的声明数")
+    abstained: int = Field(
+        default=0, ge=0, description="证据不足暂缓判定的声明数（非幻觉）")
 
     @property
     def hallucination_count(self) -> int:
@@ -235,3 +334,10 @@ class HallucinationReport(BaseModel):
         if aligned is None:
             aligned = self.total_claims - self.fake_quotes
         return aligned / self.total_claims if self.total_claims else 0.0
+
+    @property
+    def verify_success_rate(self) -> float:
+        """核验成功率：完成语义判定的声明占比（LLM故障单列，不冒充判定）。"""
+        if not self.total_claims:
+            return 0.0
+        return (self.total_claims - self.llm_errors) / self.total_claims

@@ -57,7 +57,7 @@ class PairRelation(BaseModel):
 # 声明池（与qa_agent同源：只用已核验声明）
 # ---------------------------------------------------------------
 def _load_verified_claims() -> list[dict]:
-    """加载已核验声明（附论文信息）"""
+    """加载已核验声明（附论文信息 + 核验结论/置信度/引用，阶段5证据链）"""
     cards_path = os.path.join(config.DATA_DIR, "paper_cards.json")
     review_path = os.path.join(config.DATA_DIR, "review_results.json")
     if not os.path.exists(cards_path) or not os.path.exists(review_path):
@@ -65,24 +65,31 @@ def _load_verified_claims() -> list[dict]:
 
     cards = json.load(open(cards_path, encoding="utf-8"))
     reviews = json.load(open(review_path, encoding="utf-8"))
-    supported = {
-        f"{r['arxiv_id']}#{r['claim_index']}"
-        for r in reviews
+
+    # 核验通过的声明详情（key -> review记录，供携带置信度）
+    review_by_key = {
+        f"{r['arxiv_id']}#{r['claim_index']}": r for r in reviews
         if (r.get("verdict") or {}).get("verdict") == "supported"
     }
 
     claims = []
     for card in cards:
         for idx, claim in enumerate(card.get("claims", [])):
-            if f"{card['arxiv_id']}#{idx}" not in supported:
+            key = f"{card['arxiv_id']}#{idx}"
+            r = review_by_key.get(key)
+            if r is None:
                 continue
+            quotes = claim.get("quotes", [])
             claims.append({
-                "key": f"{card['arxiv_id']}#{idx}",
+                "key": key,  # 证据ID，与evidence_index/问答池口径一致
                 "arxiv_id": card["arxiv_id"],
                 "paper_title": card.get("title", "")[:50],
                 "year": card.get("year"),
                 "type": claim.get("claim_type"),
                 "content": claim.get("content", ""),
+                "confidence": (r.get("verdict") or {}).get("confidence"),
+                "quote": (quotes[0].get("text", "")[:120]
+                          if quotes else ""),
             })
     return claims
 
@@ -237,11 +244,15 @@ def run(max_pairs: int = 60) -> list[dict]:
                 "a": {"key": a["key"], "paper_title": a["paper_title"],
                       "year": a["year"], "content": a["content"],
                       "arxiv_id": a["arxiv_id"], "claim_index":
-                      int(a["key"].split("#")[1])},
+                      int(a["key"].split("#")[1]),
+                      "confidence": a.get("confidence"),
+                      "quote": a.get("quote", "")},
                 "b": {"key": b["key"], "paper_title": b["paper_title"],
                       "year": b["year"], "content": b["content"],
                       "arxiv_id": b["arxiv_id"], "claim_index":
-                      int(b["key"].split("#")[1])},
+                      int(b["key"].split("#")[1]),
+                      "confidence": b.get("confidence"),
+                      "quote": b.get("quote", "")},
                 "relation": verdict.relation,
                 "topic": verdict.topic,
                 "explanation": verdict.explanation,

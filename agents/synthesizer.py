@@ -264,9 +264,15 @@ SYNTH_SYSTEM_PROMPT = """你是一位严谨的学术综述撰写者。
 def build_report(topic: str, cards: list[PaperCard],
                  verified: dict[str, list],
                  reviews: list[ReviewResult],
-                 table_md: str, graph_path: str) -> str:
+                 table_md: str, graph_path: str,
+                 evidence_index: dict | None = None) -> str:
     """
     生成最终Markdown综述报告（LLM撰写正文 + 程序拼接统计与附录）
+
+    阶段5：报告附录A输出证据链索引——每条通过审查的声明给出
+    证据ID（与evidence_index/矛盾检测/问答池完全一致的key）、
+    核验置信度、引用出处与PDF页码，实现端到端可追溯。
+    附录B按"幻觉"与"证据不足暂缓"分桶披露被剔除声明。
     """
     # ---- LLM撰写综述正文 ----
     material = []
@@ -287,18 +293,52 @@ def build_report(topic: str, cards: list[PaperCard],
         temperature=config.TEMP_SYNTHESIZER,
     )
 
-    # ---- 统计被剔除的声明（透明性附录）----
+    # ---- 统一协议分桶：幻觉 vs 证据不足暂缓（透明性附录）----
     hallucinated = [r for r in reviews
-                    if not r.quote_alignment or r.verdict.verdict != "supported"]
+                    if not r.quote_alignment
+                    or r.verdict.verdict in ("unsupported", "contradicted")]
+    deferred = [r for r in reviews
+                if r.quote_alignment and r.verdict.verdict == "abstained"]
+
     rejected_lines = "\n".join(
         f"- [{r.arxiv_id} #{r.claim_index}] {r.claim_content[:60]}... "
         f"(对齐={'Y' if r.quote_alignment else 'N'}, "
         f"判定={r.verdict.verdict})"
         for r in hallucinated
     ) or "（无）"
+    deferred_lines = "\n".join(
+        f"- [{r.arxiv_id} #{r.claim_index}] {r.claim_content[:60]}... "
+        f"(暂缓原因: {r.verdict.reason[:60]})"
+        for r in deferred
+    ) or "（无）"
 
     total = len(reviews)
-    good = total - len(hallucinated)
+    good = total - len(hallucinated) - len(deferred)
+
+    # ---- 附录A：证据链索引（阶段5，端到端可追溯）----
+    def _page_of(arxiv_id: str, idx: int) -> str:
+        ev = (evidence_index or {}).get(f"{arxiv_id}#{idx}", {})
+        return str(ev["page"] + 1) if ev.get("located") else "—"
+
+    chain_rows = []
+    for card in cards:
+        for idx, claim in enumerate(card.claims):
+            review = next((r for r in reviews
+                           if r.arxiv_id == card.arxiv_id
+                           and r.claim_index == idx), None)
+            if review is None or review.verdict.verdict != "supported":
+                continue
+            first_quote = claim.quotes[0] if claim.quotes else None
+            chain_rows.append(
+                f"| `{card.arxiv_id}#{idx}` | {claim.content[:42]}... "
+                f"| {review.verdict.confidence:.2f} "
+                f"| {first_quote.section if first_quote else '—'} "
+                f"| {_page_of(card.arxiv_id, idx)} |"
+            )
+    chain_table = ("\n".join(
+        ["| 证据ID | 声明 | 置信度 | 引用出处 | PDF页 |",
+         "|--------|------|--------|----------|-------|"]
+        + chain_rows) if chain_rows else "（无已核验声明）")
 
     # ---- 拼装最终报告 ----
     report = f"""# 研究综述：{topic}
@@ -306,6 +346,7 @@ def build_report(topic: str, cards: list[PaperCard],
 > 本报告由"科研文献整理Agent"自动生成。
 > 所有声明均通过两级忠实性审查（程序化引用对齐 + LLM语义核验），
 > 未通过审查的内容已剔除并列入附录B，全程可审计。
+> 每条声明可通过附录A的证据ID回溯到核验结论与PDF原文页码。
 
 ## 一、方法分类与发展脉络
 
@@ -328,11 +369,22 @@ def build_report(topic: str, cards: list[PaperCard],
 | 声明总数 | {total} 条 |
 | 通过审查 | {good} 条 ({good / total:.0%}) |
 | 剔除(幻觉) | {len(hallucinated)} 条 |
+| 暂缓(证据不足) | {len(deferred)} 条 |
 | **幻觉率** | **{len(hallucinated) / total:.1%}** |
+
+## 附录A：证据链索引（声明 -> 核验结论 -> PDF原文）
+
+{chain_table}
 
 ## 附录B：被剔除的声明（审查透明性记录）
 
+**幻觉（引用伪造/语义不支持/矛盾）:**
+
 {rejected_lines}
+
+**证据不足暂缓（非幻觉，未进入综述）:**
+
+{deferred_lines}
 """
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -356,9 +408,20 @@ def run(topic: str) -> dict:
     papers, cards, reviews = load_inputs()
     verified = _verified_claims(cards, reviews)
 
+    # 证据定位索引（阶段5: 报告附录A的页码来源；缺失时附录页码显示"—"）
+    evidence_index = {}
+    ev_path = os.path.join(config.DATA_DIR, "evidence_index.json")
+    if os.path.exists(ev_path):
+        try:
+            with open(ev_path, "r", encoding="utf-8") as f:
+                evidence_index = json.load(f)
+        except Exception as e:
+            print(f"[综合Agent] 证据索引加载失败(忽略): {e}")
+
     table_md = build_table(cards, verified)
     graph_path = build_graph(papers, cards)
-    build_report(topic, cards, verified, reviews, table_md, graph_path)
+    build_report(topic, cards, verified, reviews, table_md, graph_path,
+                 evidence_index=evidence_index)
 
     return {
         "table": os.path.join(OUTPUT_DIR, "review_table.md"),
