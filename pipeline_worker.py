@@ -25,6 +25,7 @@ import time
 import traceback
 
 import config
+import budget
 
 # ★Windows编码修复: 子进程stdout被重定向到文件时, Python默认按系统区域
 # 编码(GBK)包装, 审查Agent打印"✗"(\u2717)等字符会UnicodeEncodeError直接
@@ -210,6 +211,11 @@ def main():
         f.write(str(os.getpid()))
 
     write_status("running", stage="初始化", msg="子进程已启动")
+    # 全局时间预算(2026-10-15合并自review-agent-benchmark分支):
+    # 各Agent循环边界budget.check, 超预算抛BudgetExceededError,
+    # 防止限流退避叠加导致worker病态长跑(子进程架构下网页有终止
+    # 按钮兜底, 预算再提供第二道保险+明确的失败阶段标注)
+    budget.start(config.GLOBAL_BUDGET_MIN)
     try:
         report = run_pipeline(args.topic, args.top_k, args.mode, args.years)
         import llm_client
@@ -224,6 +230,14 @@ def main():
                      msg="用户终止: 已完成阶段的成果已保留", topic=args.topic)
         print("[worker] 收到取消请求, 优雅退出(退出码2)", flush=True)
         sys.exit(2)
+    except budget.BudgetExceededError as e:
+        write_status("error", stage=e.stage,
+                     msg=f"全局时间预算({config.GLOBAL_BUDGET_MIN:.0f}分钟)耗尽: "
+                         "多为API限流退避叠加所致, 可在.env调大GLOBAL_BUDGET_MIN"
+                         "或稍后重试(已完成阶段的成果已保留)",
+                     topic=args.topic)
+        print(f"[worker] {e}, 优雅退出(退出码3)", flush=True)
+        sys.exit(3)
     except SystemExit:
         raise                      # 上面的sys.exit(1)直接透传
     except Exception:
@@ -235,6 +249,7 @@ def main():
     finally:
         # 无论正常完成/出错/取消, 退出前删除PID文件
         # (不删的话UI会一直误判"流水线仍在运行")
+        budget.stop()
         try:
             os.remove(os.path.join(config.DATA_DIR, "pipeline.pid"))
         except OSError:

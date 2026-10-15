@@ -28,6 +28,16 @@ import logging
 # 设为ERROR后只保留真实异常; 界面内报错不受影响。
 logging.getLogger("streamlit").setLevel(logging.ERROR)
 
+# ---------------------------------------------------------------
+# 页面全局配置（必须是第一条Streamlit命令——secrets同步/密码门等
+# 任何st调用都排在它后面，否则触发StreamlitAPIException）
+# ---------------------------------------------------------------
+st.set_page_config(
+    page_title="科研文献整理Agent",
+    page_icon="📚",
+    layout="wide",
+)
+
 # 项目根目录加入path（streamlit的工作目录可能不同）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -37,31 +47,36 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 本地开发用 .env 文件，云端部署用平台 Secrets（st.secrets 读取）。
 # 这里把云端 secrets 值同步到环境变量，让 config.py 用同一套
 # os.environ 读取逻辑就能拿到值，无需改 config.py
-try:
-    _keys_to_sync = ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
-                     "S2_API_KEY", "APP_PASSWORD"]
-    for _k in _keys_to_sync:
-        if _k not in os.environ and _k in st.secrets:
-            os.environ[_k] = st.secrets[_k]
-except Exception:
-    # 没有 secrets 文件 / 本地开发 / 任何原因异常 → 静默跳过
-    # 密码门会直接查 st.secrets 做兜底，同步失败不影响密码门
-    pass
+def _secrets_file_exists() -> bool:
+    """提前探测secrets.toml是否存在——文件缺失时访问st.secrets
+    会向页面渲染警告（try/except拦不住），污染前端界面。"""
+    from pathlib import Path
+    candidates = [
+        Path.home() / ".streamlit" / "secrets.toml",
+        Path.cwd() / ".streamlit" / "secrets.toml",
+        Path(__file__).parent / ".streamlit" / "secrets.toml",
+    ]
+    return any(p.exists() for p in candidates)
+
+
+if _secrets_file_exists():
+    try:
+        _keys_to_sync = ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
+                         "S2_API_KEY", "APP_PASSWORD"]
+        for _k in _keys_to_sync:
+            if _k not in os.environ and _k in st.secrets:
+                os.environ[_k] = st.secrets[_k]
+    except Exception:
+        # secrets 读取异常 → 静默跳过
+        # 密码门会直接查 st.secrets 做兜底，同步失败不影响密码门
+        pass
 
 import config
+import budget
 from models import PaperMeta, PaperCard, ReviewResult
 
 # 证据图片目录（方案一：证据链穿透）
 EVIDENCE_DIR = os.path.join(config.PROJECT_ROOT, "evidence")
-
-# ---------------------------------------------------------------
-# 页面全局配置
-# ---------------------------------------------------------------
-st.set_page_config(
-    page_title="科研文献整理Agent",
-    page_icon="📚",
-    layout="wide",
-)
 
 # ---------------------------------------------------------------
 # 访问密码门（云端部署防护）
@@ -73,7 +88,8 @@ st.set_page_config(
 #   2. st.secrets["APP_PASSWORD"]（Streamlit Cloud / HF Spaces 平台 Secrets）
 try:
     _pwd = config.APP_PASSWORD or (
-        st.secrets.get("APP_PASSWORD", "") if "APP_PASSWORD" in st.secrets else ""
+        st.secrets.get("APP_PASSWORD", "")
+        if _secrets_file_exists() and "APP_PASSWORD" in st.secrets else ""
     )
 except Exception:
     _pwd = config.APP_PASSWORD
@@ -559,6 +575,7 @@ with st.sidebar:
             st.rerun()
         if running:
             st.info("⏳ 流水线运行中, 进度与终止按钮见页面顶部面板")
+
     with col2:
         if st.button("📂 载入已有结果", use_container_width=True,
                      help="直接展示data/和output/目录下的历史产出"):
@@ -691,7 +708,7 @@ def evidence_popover(label: str, arxiv_id: str, claim_index: int,
         img_path = os.path.join(EVIDENCE_DIR, ev["image"])
         if os.path.exists(img_path):
             st.image(img_path, caption=f"PDF第{page}页 · 黄色高亮=证据原文",
-                     use_container_width=True)
+                     use_column_width=True)
         else:
             st.error(f"证据图片缺失: {ev['image']}")
         if quotes:
@@ -725,22 +742,41 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ---- 统一核验协议v2的口径函数（与 agents/reviewer.py 保持一致）----
+def _claim_is_hallucinated(r) -> bool:
+    """幻觉 = 引用未对齐 或 语义判定 unsupported/contradicted。
+
+    LLM调用失败(review_status=llm_error)与证据不足(abstained)的声明
+    绝不因"没判出来"而计入幻觉——核验失败≠证实造假。
+    llm_error记录的verdict是abstained占位，天然不触发语义分支；
+    引用伪造是程序性证据，照常计为幻觉。
+    """
+    return (not r.quote_alignment
+            or r.verdict.verdict in ("unsupported", "contradicted"))
+
+
 # ---- 顶部统计卡片 ----
 if reviews:
     total = len(reviews)
     good = sum(1 for r in reviews
                if r.quote_alignment and r.verdict.verdict == "supported")
+    n_halluc = sum(1 for r in reviews if _claim_is_hallucinated(r))
+    n_llm_err = sum(1 for r in reviews
+                    if getattr(r, "review_status", "ok") == "llm_error")
+    verify_rate = (total - n_llm_err) / total if total else 0.0
     ev_located = sum(1 for v in evidence_index.values() if v.get("located"))
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("收录论文", f"{len(cards)} 篇")
     c2.metric("声明总数", f"{total} 条")
     c3.metric("通过核验", f"{good} 条")
-    c4.metric("幻觉率", f"{(total - good) / total:.1%}")
-    c5.metric("可穿透证据", f"{ev_located} 条")
+    c4.metric("幻觉率", f"{n_halluc / total:.1%}")
+    c5.metric("核验成功率", f"{verify_rate:.1%}")
+    c6.metric("可穿透证据", f"{ev_located} 条")
     st.caption("💡 看不懂这些指标？——「声明」=从论文摘出的可核实信息；"
-               "「通过核验」=原文引用真实且无夸大；「幻觉率」=AI表述与论文"
-               "原文不符的比例（越低越可信）；「可穿透证据」=能点击📎直达"
-               "PDF原文高亮处的声明数。详见「🗂 更多 → 📖 新手指南」。")
+               "「通过核验」=原文引用真实且无夸大；「幻觉率」=引用伪造或"
+               "与原文不符的比例（越低越可信）；「核验成功率」=完成语义"
+               "判定的比例（LLM故障单列，不冒充判定）；「可穿透证据」="
+               "能点击📎直达PDF原文高亮处的声明数。详见「🗂 更多 → 📖 新手指南」。")
 
 # ================================================================
 # 分层导航设计（降低标签栏认知负担）
@@ -947,19 +983,21 @@ with tab1:
 # ---- 标签2: 审查明细 ----
 with tab2:
     st.subheader("两级核验明细（审查Agent产出）")
-    st.caption("第1级: 程序化引用对齐(抓伪造引用) | "
-               "第2级: LLM语义核验(抓夸大/曲解)")
+    st.caption("第1级: 程序化引用对齐(抓伪造引用,含片段/置信度/页码) | "
+               "第2级: LLM原子事实核验(抓夸大/曲解,证据不足时暂缓)")
 
-    # 用表格展示全部核验结果
+    # 用表格展示全部核验结果（统一协议v2: 失败/暂红单列，不混入幻觉）
     rows = []
     for r in reviews:
+        status = getattr(r, "review_status", "ok")
         rows.append({
-            "论文": r.arxiv_id,
-            "#": r.claim_index,
+            "证据ID": f"{r.arxiv_id}#{r.claim_index}",
             "声明": r.claim_content[:50] + "...",
             "引用对齐": "✓" if r.quote_alignment else "✗",
             "语义判定": r.verdict.verdict,
             "置信度": f"{r.verdict.confidence:.2f}",
+            "失败模式": r.failure_mode if r.failure_mode != "none" else "—",
+            "核验状态": "⚠调用失败" if status == "llm_error" else "✓",
             "理由": r.verdict.reason[:60],
         })
     st.dataframe(rows, use_container_width=True, hide_index=True)
@@ -985,17 +1023,83 @@ with tab2:
             evidence_popover("📎 证据", r.arxiv_id, r.claim_index,
                              r.claim_content, quotes)
 
-    # 分组展示: 通过 vs 剔除
-    bad = [r for r in reviews if not r.quote_alignment
-           or r.verdict.verdict != "supported"]
-    st.markdown(f"### 被剔除的声明 ({len(bad)}条)")
+    # 分组展示: 幻觉剔除 / 暂缓 / 核验失败（统一协议v2三分桶）
+    bad = [r for r in reviews if _claim_is_hallucinated(r)]
+    deferred = [r for r in reviews
+                if not _claim_is_hallucinated(r)
+                and r.verdict.verdict == "abstained"]
+    errored = [r for r in reviews
+               if getattr(r, "review_status", "ok") == "llm_error"
+               and r.quote_alignment]
+
+    st.markdown(f"### 被剔除的声明 · 幻觉 ({len(bad)}条)")
     for r in bad:
         with st.expander(f"❌ [{r.arxiv_id} #{r.claim_index}] "
                          f"{r.claim_content[:50]}..."):
             st.markdown(f"- 引用对齐: {'✓ 真实' if r.quote_alignment else '✗ 疑似伪造'}")
             st.markdown(f"- 语义判定: **{r.verdict.verdict}** "
                         f"(置信度 {r.verdict.confidence})")
+            st.markdown(f"- 失败模式: {r.failure_mode}")
             st.markdown(f"- 判定理由: {r.verdict.reason}")
+            # 原子事实拆分核验记录（阶段3）
+            facts = getattr(r, "atomic_facts", [])
+            if facts:
+                st.markdown("**原子事实核验:**")
+                for f in facts:
+                    icon = {"supported": "✅", "unsupported": "❌",
+                            "contradicted": "⚔️", "abstained": "⏸️"}.get(
+                                f.verdict, "•")
+                    st.markdown(f"- {icon} `{f.verdict}` {f.fact[:80]} — "
+                                f"{f.reason[:60]}")
+            # 引用定位详情（阶段2: 片段/置信度/页码/上下文）
+            details = getattr(r, "quote_details", [])
+            if details:
+                st.markdown("**引用定位详情:**")
+                for d in details:
+                    if d.aligned:
+                        page_txt = f"第{d.page + 1}页" if d.page is not None else "页码未知"
+                        st.markdown(
+                            f"- ✓ 置信度{d.confidence:.2f} · {page_txt} · "
+                            f"命中片段: `{(d.matched_fragment or '')[:80]}`")
+                    else:
+                        st.markdown(f"- ✗ `{d.section}` 引用未能在原文定位")
+
+    if deferred:
+        st.markdown(f"### ⏸️ 证据不足暂缓 ({len(deferred)}条)")
+        st.caption("非幻觉：原文片段不足以判定，宁可暂缓不误判。"
+                   "这些声明未进入综述，也未计入幻觉率")
+        for r in deferred:
+            with st.expander(f"⏸️ [{r.arxiv_id} #{r.claim_index}] "
+                             f"{r.claim_content[:50]}..."):
+                st.markdown(f"- 暂缓原因: {r.verdict.reason}")
+                st.markdown(f"- 置信度: {r.verdict.confidence}")
+                if getattr(r, "review_status", "ok") == "llm_error":
+                    st.warning("该声明语义核验调用失败，待重跑流水线补判")
+
+    if errored:
+        st.markdown(f"### ⚠️ 核验调用失败 ({len(errored)}条)")
+        st.caption("LLM故障导致语义判定未完成——不计入幻觉，重跑流水线可补判")
+
+    # 固定Benchmark评测结果（阶段4，存在时展示）
+    bench_path = os.path.join(config.DATA_DIR, "benchmark", "benchmark_report.json")
+    if os.path.exists(bench_path):
+        try:
+            bench = json.load(open(bench_path, encoding="utf-8"))
+            with st.expander("🧪 固定Benchmark评测结果（审查器离线质量）"):
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Verdict Accuracy", f"{bench.get('verdict_accuracy', 0):.1%}")
+                m2.metric("Macro-F1", f"{bench.get('macro_f1', 0):.3f}")
+                m3.metric("误放行率", f"{bench.get('false_pass_rate', 0):.1%}")
+                m4.metric("样本数", f"{bench.get('total_cases', 0)}")
+                pf, rf_ = bench.get("precision", {}), bench.get("recall", {})
+                st.dataframe([
+                    {"类别": k, "Precision": f"{pf.get(k, 0):.3f}",
+                     "Recall": f"{rf_.get(k, 0):.3f}",
+                     "F1": f"{bench.get('f1', {}).get(k, 0):.3f}"}
+                    for k in ("supported", "unsupported", "contradicted")
+                ], use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.caption(f"Benchmark报告解析失败: {e}")
 
 # ---- 标签3: 可信问答（方案二）----
 with tab3:
@@ -1032,7 +1136,7 @@ with tab3:
             with st.chat_message("assistant"):
                 with st.spinner("检索声明池并生成有据回答..."):
                     try:
-                        ans, _ = qa_mod.answer_question(
+                        ans, qa_pool = qa_mod.answer_question(
                             q, st.session_state.qa_history[:-1])
                         body = ans.answer
                         if not ans.can_answer:
@@ -1041,6 +1145,29 @@ with tab3:
                         st.markdown(body)
                         if ans.used_claims:
                             st.caption(f"依据: 声明 {ans.used_claims}")
+                            # 证据链穿透（阶段5）：声明#N -> 证据ID -> PDF页码
+                            _n2c = {c["num"]: c for c in qa_pool}
+                            for _n in ans.used_claims:
+                                _c = _n2c.get(_n)
+                                if not _c:
+                                    continue
+                                with st.expander(
+                                        f"📎 [#{_n}] {_c['content'][:60]}..."):
+                                    conf = _c.get("confidence")
+                                    st.caption(
+                                        f"证据ID `{_c['evidence_id']}` · "
+                                        f"核验置信度 {conf:.2f}"
+                                        if isinstance(conf, (int, float))
+                                        else f"证据ID `{_c['evidence_id']}`")
+                                    if _c.get("quote"):
+                                        st.markdown(
+                                            f"> `{_c.get('quote_section', '')}` "
+                                            f"{_c['quote']}")
+                                    if _c.get("page") is not None:
+                                        st.caption(
+                                            f"PDF第{_c['page'] + 1}页"
+                                            + (f" · 截图: {_c['evidence_image']}"
+                                               if _c.get("evidence_image") else ""))
                         st.session_state.qa_history.append({
                             "role": "assistant",
                             "content": body,
@@ -1054,14 +1181,21 @@ with tab3:
         st.markdown("**📚 当前声明池**（问答的知识边界）")
         pool = qa_mod.build_claim_pool()
         if pool:
-            st.caption(f"共{len(pool)}条已核验声明 · 回答只能引用这些内容")
+            st.caption(f"共{len(pool)}条已核验声明 · 回答只能引用这些内容"
+                       f" · 均带证据ID可回溯PDF原文")
             for c in pool:
                 type_icon = {"method": "🔵", "result": "🟢",
                              "limitation": "🟠"}.get(c["type"], "⚪")
+                conf = c.get("confidence")
+                conf_txt = (f" · 置信度{conf:.2f}"
+                            if isinstance(conf, (int, float)) else "")
+                text = (f"{c['content'][:80]}..."
+                        if len(c["content"]) > 80 else c["content"])
                 st.markdown(
-                    f"{type_icon} **[#{c['num']}]** {c['content'][:80]}..."
-                    if len(c["content"]) > 80
-                    else f"{type_icon} **[#{c['num']}]** {c['content']}"
+                    f"{type_icon} **[#{c['num']}]** {text}{conf_txt}  \n"
+                    f"<span style='font-size:.75rem;color:gray'>"
+                    f"🆔 {c['evidence_id']}</span>",
+                    unsafe_allow_html=True
                 )
         else:
             st.info("声明池为空，请先运行完整流水线")
@@ -1119,15 +1253,21 @@ with tab4:
             ):
                 st.markdown(f"**分析**: {c['explanation']}")
 
-                # 双方观点对照展示（各带证据穿透）
+                # 双方观点对照展示（各带证据穿透与核验置信度）
                 for side, label in [("a", "观点A"), ("b", "观点B")]:
                     s = c[side]
                     st.markdown(f"**{label}**: "
                                 f"《{s['paper_title'][:40]}》"
-                                f"({s['year']}, arXiv:{s['arxiv_id']})")
+                                f"({s['year']}, arXiv:{s['arxiv_id']})"
+                                + (f" · 置信度{s['confidence']:.2f}"
+                                   if isinstance(s.get("confidence"),
+                                                 (int, float)) else ""))
                     s_col, e_col = st.columns([5, 1])
                     with s_col:
                         st.markdown(f"> {s['content']}")
+                        if s.get("quote"):
+                            st.caption(f"🆔 {s['key']} · "
+                                       f"引用: {s['quote'][:80]}")
                     with e_col:
                         evidence_popover(
                             "📎 证据", s["arxiv_id"], s["claim_index"],
@@ -1348,7 +1488,7 @@ with tab8:
                                     st.image(_img,
                                              caption=f"第{_h['page'] + 1}页 · "
                                                      f"黄色高亮=关键词",
-                                             use_container_width=True)
+                                             use_column_width=True)
                                 _j1, _j2 = st.columns([1, 2])
                                 with _j1:
                                     if st.button("📄 跳转原文页",
@@ -1622,7 +1762,7 @@ with tab8:
                     _render_page(pdf_path, _jump_page),
                     caption=f"★ 跳转目标 · 第 {_jump_page + 1} 页 / "
                             f"共 {n_pages} 页 ★",
-                    use_container_width=True,
+                    use_column_width=True,
                 )
                 # 消费后清理跳转标记（刷新后不残留）
                 del st.session_state.pdf_jump_id
@@ -1648,7 +1788,7 @@ with tab8:
                 st.image(
                     _render_page(pdf_path, i),
                     caption=f"—— 第 {i + 1} 页 / 共 {n_pages} 页{_mark} ——",
-                    use_container_width=True,
+                    use_column_width=True,
                 )
                 # 该页笔记紧凑展示（引用+批注各一行）
                 for _pn2 in _pg_notes.get(i, [])[:3]:

@@ -16,13 +16,19 @@ import time
 import hashlib
 from openai import OpenAI
 
+import budget
 import config
 import cache as _cache
 
 # ---------------------------------------------------------------
 # 创建全局客户端（整个项目共用一个，避免重复创建）
 # ---------------------------------------------------------------
-client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL)
+# timeout: 单次调用的硬超时（SDK默认600秒，网络挂起时一次就卡10分钟，
+#          这是"程序不结束"的主要根因，必须显式收紧）
+# max_retries=0: 关闭SDK内部重试，由下方chat()统一控制重试次数与退避，
+#          否则SDK重试×我们的重试相乘，失败场景耗时不可控
+client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL,
+                timeout=config.LLM_TIMEOUT, max_retries=0)
 
 # 简易的用量统计器（用于结题报告的成本分析实验）
 usage_stats = {
@@ -49,7 +55,7 @@ def _fingerprint(model: str, temperature: float, messages: list) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
-def chat(messages, temperature=0.2, model=None, max_retries=3,
+def chat(messages, temperature=0.2, model=None, max_retries=None,
          use_cache=True):
     """
     基础对话函数
@@ -59,7 +65,7 @@ def chat(messages, temperature=0.2, model=None, max_retries=3,
                   [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
         temperature: 温度参数，控制随机性（提取任务用0.1，规划用0.5）
         model: 模型名，默认用 config.MODEL_NAME
-        max_retries: 网络失败重试次数
+        max_retries: 网络失败重试次数（默认取config.LLM_MAX_RETRIES）
         use_cache: 是否启用LLM结果缓存（默认开启）。缓存命中时
                    同样的输入直接返回上次输出，零耗时零花费。
                    chat_json内部调用本函数时会关掉它（结构化缓存
@@ -69,6 +75,7 @@ def chat(messages, temperature=0.2, model=None, max_retries=3,
         模型的纯文本回答 (str)
     """
     model = model or config.MODEL_NAME
+    max_retries = config.LLM_MAX_RETRIES if max_retries is None else max_retries
 
     # ---- 缓存查询（命中则完全跳过API调用）----
     cache_key = None
@@ -82,6 +89,9 @@ def chat(messages, temperature=0.2, model=None, max_retries=3,
             return hit
 
     for attempt in range(max_retries):
+        # 全局预算检查: 超预算立即中止（异常在try外抛出，不会被下面的
+        # 重试逻辑吞掉），前端据此标注失败阶段
+        budget.check("LLM调用")
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -104,7 +114,13 @@ def chat(messages, temperature=0.2, model=None, max_retries=3,
 
             return content
 
+        except budget.BudgetExceededError:
+            raise  # 预算耗尽不重试，直接上抛
         except Exception as e:
+            # 认证/鉴权类错误重试无意义（换多少次都是401），立即上抛
+            # 避免白等2+4+8秒并掩盖真实问题
+            if "401" in str(e) or "403" in str(e) or "api key" in str(e).lower():
+                raise
             # 重试策略：等待时间指数增长（2秒、4秒、8秒）
             wait = 2 ** (attempt + 1)
             print(f"[llm_client] 调用失败(第{attempt + 1}次): {e}，{wait}秒后重试...")
@@ -128,6 +144,7 @@ def chat_stream(messages, temperature=0.2, model=None, max_retries=2):
     model = model or config.MODEL_NAME
 
     for attempt in range(max_retries):
+        budget.check("LLM流式调用")  # 超预算立即中止，不开始新的长生成
         try:
             stream = client.chat.completions.create(
                 model=model,
@@ -139,6 +156,8 @@ def chat_stream(messages, temperature=0.2, model=None, max_retries=2):
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
             return  # 正常结束
+        except budget.BudgetExceededError:
+            raise  # 预算耗尽不重试
         except Exception as e:
             wait = 2 ** (attempt + 1)
             print(f"[llm_client] 流式调用失败(第{attempt + 1}次): {e}，{wait}秒后重试...")

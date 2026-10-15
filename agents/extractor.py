@@ -21,11 +21,48 @@ import pymupdf
 
 import llm_client
 import config
+import budget
 from models import PaperMeta, PaperCard
 
 # ---------------------------------------------------------------
 # 第1段：PDF → 纯文本
 # ---------------------------------------------------------------
+def _clean_page_text(text: str) -> str:
+    """单页文本清洗：去掉连续3个以上的换行（PDF排版残留）"""
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text
+
+
+def pdf_to_pages(pdf_path: str, max_chars: int = 100_000) -> list[str]:
+    """
+    解析PDF为逐页文本列表（供引用定位按页归属使用）
+
+    每页做与 pdf_to_text 相同的清洗（含页码噪声行去除），
+    总量超过 max_chars 时停止追加（与 pdf_to_text 截断口径一致）。
+
+    返回:
+        list[str]，第i个元素为第i页(0-based)的清洗后文本
+    """
+    doc = pymupdf.open(pdf_path)
+    pages: list[str] = []
+    total = 0
+    for page in doc:
+        text = _clean_page_text(page.get_text("text"))
+        # 页码噪声处理：把单独成行的数字（页码）去掉
+        lines = [ln for ln in text.split("\n")
+                 if not (ln.strip().isdigit() and len(ln.strip()) <= 4)]
+        text = "\n".join(lines)
+        total += len(text)
+        if total > max_chars:
+            print(f"[提取Agent] 论文过长(>{max_chars}字符)，"
+                  f"在{len(pages)}页处截断")
+            break
+        pages.append(text)
+    doc.close()
+    return pages
+
+
 def pdf_to_text(pdf_path: str, max_chars: int = 100_000) -> str:
     """
     解析PDF全文并做简易清洗
@@ -40,22 +77,7 @@ def pdf_to_text(pdf_path: str, max_chars: int = 100_000) -> str:
     返回:
         清洗后的全文文本
     """
-    doc = pymupdf.open(pdf_path)
-    pages = []
-    for page in doc:
-        text = page.get_text("text")
-        # 简易清洗：去掉连续3个以上的换行（PDF排版残留）
-        while "\n\n\n" in text:
-            text = text.replace("\n\n\n", "\n\n")
-        pages.append(text)
-    doc.close()
-
-    full_text = "\n".join(pages)
-
-    # 二页码噪声处理：把单独成行的数字（页码）去掉
-    lines = [ln for ln in full_text.split("\n")
-             if not (ln.strip().isdigit() and len(ln.strip()) <= 4)]
-    full_text = "\n".join(lines)
+    full_text = "\n".join(pdf_to_pages(pdf_path, max_chars=max_chars))
 
     if len(full_text) > max_chars:
         print(f"[提取Agent] 论文过长({len(full_text)}字符)，截断到{max_chars}")
@@ -103,6 +125,7 @@ def extract_card(paper: PaperMeta) -> PaperCard | None:
     返回:
         PaperCard 实例；解析失败返回None
     """
+    budget.check("提取Agent")  # 超预算立即中止（异常穿透线程池向上传播）
     print(f"[提取Agent] 正在处理: {paper.title[:50]}...")
 
     # 1. PDF → 全文
@@ -135,6 +158,8 @@ def extract_card(paper: PaperMeta) -> PaperCard | None:
         n_quotes = sum(len(c.quotes) for c in card.claims)
         print(f"[提取Agent] 完成: 提取{n_claims}条声明, {n_quotes}条原文引用")
         return card
+    except budget.BudgetExceededError:
+        raise  # 预算耗尽必须上抛终止流水线，不能按"单篇失败"吞掉
     except Exception as e:
         print(f"[提取Agent] 提取失败(跳过该论文): {e}")
         return None
