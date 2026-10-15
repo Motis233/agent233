@@ -39,6 +39,11 @@ _DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 TTL_SECONDS = 7 * 86400  # 缓存有效期：7天（论文元数据变化极慢）
 
+# LLM结果缓存的有效期：30天。
+# 论文原文和提取结论都不会变，同一段输入的LLM输出可以长期复用；
+# 比HTTP缓存的7天更长，因为重新调用LLM的代价（钱+30秒等待）远高于元数据请求
+LLM_TTL_SECONDS = 30 * 86400
+
 _LOCK = threading.Lock()   # 保护连接的写操作（多线程并发安全）
 _CONN: sqlite3.Connection | None = None  # 惰性初始化的连接
 
@@ -58,11 +63,20 @@ def _init() -> sqlite3.Connection:
         # 请求日志表（任务4慢查询诊断的数据源）
         _CONN.execute("""CREATE TABLE IF NOT EXISTS req_log(
             ts         REAL,            -- 请求时间戳
-            source     TEXT,            -- openalex / s2 / crossref...
+            source     TEXT,            -- openalex / s2 / crossref / llm...
             key_prefix TEXT,            -- 请求指纹前16位（排查用）
             ms         REAL,            -- 耗时（毫秒）
             status     TEXT,            -- ok / 429 / 5xx / error / expired
             from_cache INTEGER          -- 1=缓存命中 0=真实网络请求
+        )""")
+        # LLM结果缓存表（2026-09新增）：
+        # 提取/审查/规划等结构化LLM调用的返回值按"消息指纹"缓存。
+        # 与HTTP缓存分表的原因：TTL不同（30天 vs 7天），
+        # 且诊断时想把"LLM命中"与"检索命中"分开统计
+        _CONN.execute("""CREATE TABLE IF NOT EXISTS llm_cache(
+            key     TEXT PRIMARY KEY,   -- 消息指纹(SHA1)
+            ts      REAL,               -- 写入时间戳（判断过期）
+            payload TEXT                -- LLM原始输出文本
         )""")
         _CONN.commit()
     return _CONN
@@ -128,6 +142,53 @@ def put(key: str, payload: dict) -> None:
             "INSERT OR REPLACE INTO cache(key, ts, payload) VALUES (?,?,?)",
             (key, time.time(),
              json.dumps(payload, ensure_ascii=False)))
+        conn.commit()
+
+
+# ---------------------------------------------------------------
+# LLM结果缓存（2026-09新增，供 llm_client.chat/chat_json 使用）
+# ---------------------------------------------------------------
+def get_llm(key: str) -> str | None:
+    """
+    读取LLM结果缓存。命中返回原始输出文本(str)；未命中/过期返回None。
+
+    为什么不复用get()：HTTP缓存和LLM缓存的TTL不同（7天 vs 30天），
+    分表分函数避免在get()里加分支（保持检索缓存逻辑不动）。
+    命中同样记入req_log(source='llm')，诊断面板能看到LLM命中率。
+    """
+    conn = _init()
+    t0 = time.perf_counter()
+    row = conn.execute(
+        "SELECT ts, payload FROM llm_cache WHERE key=?", (key,)).fetchone()
+    if row is not None:
+        if time.time() - row[0] < LLM_TTL_SECONDS:
+            _log(key, "llm", (time.perf_counter() - t0) * 1000,
+                 "ok", from_cache=1)
+            return row[1]
+        else:
+            with _LOCK:
+                conn.execute("DELETE FROM llm_cache WHERE key=?", (key,))
+                conn.commit()
+            _log(key, "llm", (time.perf_counter() - t0) * 1000,
+                 "expired", from_cache=0)
+            return None
+    _log(key, "llm", (time.perf_counter() - t0) * 1000, "miss", from_cache=0)
+    return None
+
+
+def put_llm(key: str, text: str) -> None:
+    """
+    写入LLM结果缓存。
+
+    契约与put()一致：只缓存"成功返回并被成功解析"的输出——
+    chat_json侧在Pydantic校验通过后才调用本函数，因此
+    解析失败的残次输出永远不会污染缓存（下轮重跑会重新调用）。
+    """
+    conn = _init()
+    with _LOCK:
+        conn.execute(
+            "INSERT OR REPLACE INTO llm_cache(key, ts, payload) VALUES (?,?,?)",
+            (key, time.time(), text))
         conn.commit()
 
 

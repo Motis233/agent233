@@ -13,9 +13,11 @@ llm_client.py —— 统一的 LLM 调用封装
 
 import json
 import time
+import hashlib
 from openai import OpenAI
 
 import config
+import cache as _cache
 
 # ---------------------------------------------------------------
 # 创建全局客户端（整个项目共用一个，避免重复创建）
@@ -24,13 +26,31 @@ client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL)
 
 # 简易的用量统计器（用于结题报告的成本分析实验）
 usage_stats = {
-    "total_calls": 0,      # 总调用次数
+    "total_calls": 0,      # 总调用次数（真实API调用）
+    "cache_hits": 0,       # 缓存命中次数（省下的调用）
     "total_prompt_tokens": 0,   # 总输入token
     "total_completion_tokens": 0,  # 总输出token
 }
 
 
-def chat(messages, temperature=0.2, model=None, max_retries=3):
+def _fingerprint(model: str, temperature: float, messages: list) -> str:
+    """
+    生成一次LLM调用的"消息指纹"（缓存键）
+
+    指纹 = 模型名 + 温度 + 全部消息内容 的SHA1。
+    同一篇论文的提取、同一条声明的审查，输入完全一致 → 指纹一致
+    → 直接复用上次输出。消息里含论文全文（10万字符），但SHA1哈希
+    300KB文本只需几毫秒，开销可忽略。
+    """
+    raw = json.dumps(
+        {"m": model, "t": temperature, "msgs": messages},
+        ensure_ascii=False, sort_keys=True,
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def chat(messages, temperature=0.2, model=None, max_retries=3,
+         use_cache=True):
     """
     基础对话函数
 
@@ -40,11 +60,26 @@ def chat(messages, temperature=0.2, model=None, max_retries=3):
         temperature: 温度参数，控制随机性（提取任务用0.1，规划用0.5）
         model: 模型名，默认用 config.MODEL_NAME
         max_retries: 网络失败重试次数
+        use_cache: 是否启用LLM结果缓存（默认开启）。缓存命中时
+                   同样的输入直接返回上次输出，零耗时零花费。
+                   chat_json内部调用本函数时会关掉它（结构化缓存
+                   在chat_json层做，避免把解析失败的原始输出存进缓存）
 
     返回:
         模型的纯文本回答 (str)
     """
     model = model or config.MODEL_NAME
+
+    # ---- 缓存查询（命中则完全跳过API调用）----
+    cache_key = None
+    if config.LLM_CACHE_ENABLED and use_cache:
+        cache_key = _fingerprint(model, temperature, messages)
+        hit = _cache.get_llm(cache_key)
+        if hit is not None:
+            usage_stats["cache_hits"] += 1
+            print(f"[LLM缓存] 命中: {cache_key[:12]} (跳过API调用, "
+                  f"已命中{usage_stats['cache_hits']}次)")
+            return hit
 
     for attempt in range(max_retries):
         try:
@@ -58,7 +93,16 @@ def chat(messages, temperature=0.2, model=None, max_retries=3):
             usage_stats["total_prompt_tokens"] += response.usage.prompt_tokens
             usage_stats["total_completion_tokens"] += response.usage.completion_tokens
 
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
+
+            # ---- 成功响应写入缓存（失败/重试的残次输出不入库）----
+            if config.LLM_CACHE_ENABLED and use_cache and content:
+                try:
+                    _cache.put_llm(cache_key, content)
+                except Exception as e:
+                    print(f"[LLM缓存] 写入失败(忽略): {e}")
+
+            return content
 
         except Exception as e:
             # 重试策略：等待时间指数增长（2秒、4秒、8秒）
@@ -103,7 +147,8 @@ def chat_stream(messages, temperature=0.2, model=None, max_retries=2):
     raise RuntimeError(f"LLM流式调用连续失败{max_retries}次，请检查网络和API密钥")
 
 
-def chat_json(messages, schema_class, temperature=0.1, model=None):
+def chat_json(messages, schema_class, temperature=0.1, model=None,
+              use_cache=True):
     """
     要求模型输出 JSON 并解析为 Pydantic 对象
 
@@ -111,6 +156,11 @@ def chat_json(messages, schema_class, temperature=0.1, model=None):
         messages: 消息列表
         schema_class: Pydantic 模型类（如 models.SearchPlan）
         temperature: 默认0.1，保证结构化输出稳定
+        use_cache: 是否启用LLM结果缓存（默认开启）。缓存粒度是
+                   "最终校验通过的输出"——同一篇论文第二次提取、
+                   同一条声明第二次审查时直接秒回，不花一分钱。
+                   注意缓存键用"修复重试前"的原始消息计算，因此
+                   即使上次经历了JSON修复重试，重跑也只需一次查询
 
     返回:
         schema_class 的实例对象
@@ -195,16 +245,56 @@ def chat_json(messages, schema_class, temperature=0.1, model=None):
     else:
         messages.insert(0, {"role": "system", "content": json_instruction})
 
+    # ---- 结构化缓存查询（在注入格式要求之后计算指纹）----
+    # 键 = schema名 + 温度 + 模型 + 注入格式要求后的完整消息
+    cache_key = None
+    if config.LLM_CACHE_ENABLED and use_cache:
+        cache_key = _fingerprint(
+            model or config.MODEL_NAME, temperature, messages)
+        hit = _cache.get_llm(cache_key)
+        if hit is not None:
+            try:
+                obj = schema_class.model_validate_json(hit)
+                usage_stats["cache_hits"] += 1
+                print(f"[LLM缓存] 命中: {schema_class.__name__} "
+                      f"(跳过API调用, 已命中{usage_stats['cache_hits']}次)")
+                return obj
+            except Exception:
+                # 缓存的输出居然校验失败（理论不该发生）：
+                # 删除脏数据，当作未命中继续走正常流程
+                print("[LLM缓存] 缓存内容校验失败, 删除脏数据后重新调用")
+                try:
+                    import sqlite3
+                    conn = _cache._init()
+                    with _cache._LOCK:
+                        conn.execute("DELETE FROM llm_cache WHERE key=?",
+                                     (cache_key,))
+                        conn.commit()
+                except Exception:
+                    pass
+
     # 最多尝试3次解析（第一次解析失败就把错误信息喂回去让模型自己修复）
     for attempt in range(3):
-        raw = chat(messages, temperature=temperature, model=model)
+        # use_cache=False: 结构化调用的缓存在本函数这一层做，
+        # 避免把"解析失败的原始输出"存进chat()层的缓存污染重跑
+        raw = chat(messages, temperature=temperature, model=model,
+                   use_cache=False)
         try:
             # 剥离可能的 ```json ``` 包裹
             text = raw.strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[1] if "\n" in text else text
                 text = text.rsplit("```", 1)[0]
-            return schema_class.model_validate_json(text)
+            obj = schema_class.model_validate_json(text)
+
+            # ---- 校验通过才写缓存（残次输出永远不入库）----
+            if config.LLM_CACHE_ENABLED and use_cache and cache_key:
+                try:
+                    _cache.put_llm(cache_key, text)
+                except Exception as e:
+                    print(f"[LLM缓存] 写入失败(忽略): {e}")
+
+            return obj
         except Exception as e:
             print(f"[llm_client] JSON解析失败(第{attempt + 1}次): {e}")
             # 把解析错误反馈给模型，让它修复
@@ -221,7 +311,8 @@ def print_usage():
     """打印当前累计的token用量（成本分析实验用）"""
     print("=" * 50)
     print("📊 LLM 用量统计")
-    print(f"  调用次数:       {usage_stats['total_calls']}")
+    print(f"  真实API调用:    {usage_stats['total_calls']} 次")
+    print(f"  缓存命中省下:   {usage_stats['cache_hits']} 次")
     print(f"  输入token总量:  {usage_stats['total_prompt_tokens']}")
     print(f"  输出token总量:  {usage_stats['total_completion_tokens']}")
     print("=" * 50)

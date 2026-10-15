@@ -9,7 +9,7 @@ models.py —— Pydantic 数据结构定义
   -> ReviewResult(审查) -> 最终综述报告
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ===============================================================
@@ -120,12 +120,42 @@ class PaperCard(BaseModel):
 # 4. 审查Agent的输出：核验结果（★幻觉率量化实验的核心）
 # ===============================================================
 class ReviewVerdict(BaseModel):
-    """对单条声明的核验判定"""
+    """对单条声明的核验判定
+
+    字段顺序即生成顺序(2026-09-22实验③迭代): reason放在verdict之前,
+    让模型"先写逐项核对的理由, 再下结论"——理由成为思维链。
+    实测: 先结论后理由时, 审查员对中文声明的单词级偷换
+    (如"服务导向→平台导向")不敏感, 拦截率仅~50%。
+    """
+    reason: str = Field(
+        description="判定理由: 先列出声明中的关键事实(数字/名称/范围词), "
+                    "并逐项注明原文片段中对应的英文表述; 若有不符, 明确指出"
+                    "是哪一项对不上"
+    )
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _coerce_reason(cls, v):
+        """宽容化: LLM按'关键事实清单'提示词常把reason输出成结构化列表
+        (如[{'fact': 'PLIF神经元', 'quote': ...}])而非纯字符串, 之前会
+        连续3次校验失败→整条声明误判为unsupported。这里把列表/字典
+        拼接为可读文本, 语义不变, 兼容两种输出形态。"""
+        if isinstance(v, list):
+            parts = []
+            for item in v:
+                if isinstance(item, dict):
+                    parts.append("；".join(f"{k}: {val}"
+                                           for k, val in item.items()))
+                else:
+                    parts.append(str(item))
+            return "；".join(parts)
+        if isinstance(v, dict):
+            return "；".join(f"{k}: {val}" for k, val in v.items())
+        return v
     verdict: str = Field(
         description="判定结果: supported(原文支持) / unsupported(原文不支持) "
                     "/ contradicted(与原文矛盾)"
     )
-    reason: str = Field(description="一句话判定理由")
     confidence: float = Field(
         description="判定置信度0-1",
         ge=0.0, le=1.0,

@@ -17,9 +17,16 @@ app.py —— Streamlit前端（Demo展示界面）
 import os
 import sys
 import json
+import subprocess
 import time
 
 import streamlit as st
+import logging
+
+# 压制Streamlit弃用警告刷屏(use_container_width/st.html等):
+# 1.63版每个组件每次重跑都打一条WARNING, 终端被完全淹没。
+# 设为ERROR后只保留真实异常; 界面内报错不受影响。
+logging.getLogger("streamlit").setLevel(logging.ERROR)
 
 # 项目根目录加入path（streamlit的工作目录可能不同）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -281,159 +288,224 @@ def load_text(path: str):
 
 
 # ---------------------------------------------------------------
-# 流水线执行（封装四Agent，带进度显示）
+# 流水线执行（方案二: 子进程隔离 + 两段式终止）
 # ---------------------------------------------------------------
-def run_pipeline(topic: str, target_count: int,
-                 retrieval_mode: str = "standard", mode_years: int = 2):
-    """
-    执行 规划->检索->提取->审查->综合 完整流水线
+# 设计: 流水线在独立Python子进程(pipeline_worker.py)中运行, UI只负责
+# 启动/轮询/终止。好处:
+#   ①终止按钮可真正杀掉进程(连进行中的LLM调用一并结束);
+#   ②流水线与Streamlit脚本完全隔离, 关网页/误操作互不干扰;
+#   ③进度通过data/下的状态文件交换, 界面每3秒自动刷新。
+_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "pipeline_worker.py")
+_STATUS_FILE = os.path.join(config.DATA_DIR, "pipeline_status.json")
+_CANCEL_FLAG = os.path.join(config.DATA_DIR, "pipeline_cancel.flag")
 
-    retrieval_mode:
-        "standard"        标准检索（规划Agent生成检索词，S2主源三段管线）
-        "mode1"/"mode2"/"mode3" 三模式检索作为检索阶段
-        （检索词规划与多库检索由模式检索承担，后续提取/审查/综合不变）
-    """
-    from agents import planner, searcher, extractor, reviewer, synthesizer
-    import llm_client
 
-    # ---- 1+2. 检索阶段（标准 / 三模式 两条路径；
-    # 模式未命中先降级标准检索，降级后仍未命中才终止）----
-    _use_mode = retrieval_mode in ("mode1", "mode2", "mode3")
-    _mode_miss = False  # 模式检索未命中 → 已降级为标准检索
-    papers = []
-    if _use_mode:
-        from agents import mode_assistant
+def _read_status() -> dict:
+    """读取worker状态文件(不存在/损坏时返回空dict)"""
+    try:
+        with open(_STATUS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
-        _mode_names = {"mode1": "🌱 入门综述", "mode2": "🚀 前沿突破",
-                       "mode3": "🔀 交叉领域"}
-        status = st.status(
-            f"🎯 {_mode_names[retrieval_mode]}模式检索: "
-            "规划检索词+多库检索中...", expanded=True)
-        papers = mode_assistant.retrieve_for_pipeline(
-            topic, retrieval_mode, mode_years, top_k=target_count)
-        if papers:
-            st.write(f"模式检索命中 {len(papers)} 篇（带PDF直链），"
-                     "开始下载PDF...")
-            status.update(
-                label=f"🎯 {_mode_names[retrieval_mode]}检索完成: "
-                      f"{len(papers)}篇候选", state="complete")
-        else:
-            # 用户要求: 模式检索未命中 → 先降级为标准检索继续
-            st.warning("🎯 模式检索未命中带PDF直链的文献，"
-                       "已自动切换为**标准检索**继续...")
-            status.update(label="⚠️ 模式检索未命中，已切换为标准检索",
-                          state="complete")
-            _use_mode = False
-            _mode_miss = True
-    if not _use_mode:
-        # ---- 1. 规划Agent（标准路径）----
-        status = st.status("🧠 规划Agent: 分解研究主题...", expanded=True)
-        plan = planner.make_plan(topic)
-        st.session_state.run_outputs["plan"] = plan
-        status.update(label=f"🧠 规划Agent完成: {len(plan.keywords)}组检索词",
-                      state="complete")
 
-    # ---- 2. 检索Agent: PDF下载（两条路径共用下载与筛选收尾）----
-    status = st.status("🔍 检索Agent: 下载论文PDF中（arXiv限速,约需1-3分钟）...",
-                       expanded=True)
-    if _use_mode:
-        # 模式路径: papers已落盘元数据，这里只补PDF下载（含arXiv救援）
-        papers = searcher.download(papers)
-        # 下载后重写元数据（剔除下载失败项，与searcher.run落盘口径一致，
-        # 后续extractor/reviewer只处理有本地PDF的论文）
-        if papers:
-            with open(os.path.join(config.DATA_DIR, "papers_meta.json"),
-                      "w", encoding="utf-8") as f:
-                json.dump([p.model_dump() for p in papers], f,
-                          ensure_ascii=False, indent=2)
-    else:
-        st.write("检索词: " + ", ".join(plan.keywords))
-        papers = searcher.run(plan, results_per_query=8, top_k=target_count)
-    if len(papers) == 0:
-        # 用户要求: 模式检索降级标准检索后仍未命中 → 终止流水线
-        if _mode_miss:
-            st.error("❌ 模式检索未命中，流水线终止")
-            status.update(label="❌ 模式检索未命中，流水线终止",
-                          state="error")
-        else:
-            status.update(label="❌ 检索失败: 没有获得可用论文", state="error")
-        st.stop()
+_PID_FILE = os.path.join(config.DATA_DIR, "pipeline.pid")
 
-    # 模式检索附加（含降级标准检索后命中的情况）: 生成核心名词速查表
-    # （无上限），存入会话+落盘，供「论文原文」页旁随时对照查看
-    if _use_mode or _mode_miss:
+
+def _alive_worker_pid():
+    """返回正在运行的worker进程PID(没有则None)。
+    页面刷新后session_state清零、进程句柄丢失, PID文件是跨会话判断
+    "流水线是否在跑"的唯一可靠依据(防止并发双跑抢API额度)"""
+    try:
+        pid = int(open(_PID_FILE).read().strip())
+    except Exception:
+        return None
+    try:
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if h:
+            ctypes.windll.kernel32.CloseHandle(h)
+            return pid
+    except Exception:
+        pass
+    return None
+
+
+def start_pipeline_subprocess(topic: str, target_count: int,
+                              retrieval_mode: str = "standard",
+                              mode_years: int = 2) -> bool:
+    """启动子进程流水线: 清理旧状态文件 → Popen → 句柄存入会话。
+    返回False=已有worker在跑, 本次启动被拒绝(跨进程运行锁)"""
+    _old_pid = _alive_worker_pid()
+    if _old_pid is not None:
+        st.warning(f"⚠️ 检测到已有流水线进程在运行（PID {_old_pid}），"
+                   "已阻止重复启动——并发双跑会互相抢API限流额度。"
+                   "进度面板见页面顶部，可用终止按钮结束当前运行")
+        st.session_state.pipeline_running = True
+        return False
+    for _p in (_STATUS_FILE, _CANCEL_FLAG):
+        if os.path.exists(_p):
+            os.remove(_p)
+    cmd = [sys.executable, _WORKER,
+           "--topic", topic, "--top_k", str(target_count),
+           "--mode", retrieval_mode, "--years", str(mode_years)]
+    # stdout/stderr重定向到日志文件, 供诊断(worker的详细打印都在这里)
+    logf = open(os.path.join(config.DATA_DIR, "pipeline_stdout.log"),
+                "w", encoding="utf-8")
+    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                            cwd=os.path.dirname(_WORKER))
+    st.session_state["pipeline_proc"] = proc
+    st.session_state["pipeline_finalized"] = False
+    st.session_state["_prog_echo_off"] = 0      # 终端回显从头开始
+    return True
+
+
+def _terminate_pipeline():
+    """两段式终止: 先置取消标志让worker在阶段边界优雅退出(保留成果),
+    最多等10秒; 仍不退出则terminate()硬终止(连进行中的LLM调用一并结束)"""
+    proc = st.session_state.get("pipeline_proc")
+    if proc is None:
+        return
+    with open(_CANCEL_FLAG, "w", encoding="utf-8") as f:
+        f.write("cancel")
+    for _ in range(20):                 # 最多等待10秒
+        if proc.poll() is not None:
+            break
+        time.sleep(0.5)
+    if proc.poll() is None:
+        proc.terminate()                # Windows下即硬终止
         try:
-            st.write("生成核心名词速查表（供论文原文页对照）...")
-            _g = mode_assistant.generate_glossary(papers, topic)
-            if _g:
-                st.session_state.glossary_md = _g
-                st.session_state.glossary_topic = topic
-                with open(os.path.join(config.DATA_DIR, "glossary_last.json"),
-                          "w", encoding="utf-8") as f:
-                    json.dump({"topic": topic, "md": _g}, f,
-                              ensure_ascii=False, indent=1)
-        except Exception as _g_err:
-            st.write(f"速查表生成失败(不影响流水线): {_g_err}")
-    st.write(f"获得 {len(papers)} 篇论文, PDF已下载")
-    status.update(label=f"🔍 检索Agent完成: {len(papers)}篇论文", state="complete")
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+    st.toast("检索已终止", icon="⏹")
 
-    # ---- 3. 提取Agent ----
-    status = st.status("📄 提取Agent: 抽取信息卡片中（每篇约1分钟）...",
-                       expanded=True)
-    cards = extractor.run(papers)
-    status.update(label=f"📄 提取Agent完成: {len(cards)}张卡片, "
-                        f"{sum(len(c.claims) for c in cards)}条声明",
-                  state="complete")
 
-    # ---- 4. 审查Agent ----
-    status = st.status("✅ 审查Agent: 两级核验中（程序对齐+语义审查）...",
-                       expanded=True)
-    results = reviewer.run(papers, cards)
-    report = reviewer.generate_report(results)
-    status.update(label=f"✅ 审查Agent完成: 幻觉率 {report.hallucination_rate:.1%}",
-                  state="complete")
-
-    # ---- 5. 综合Agent ----
-    status = st.status("📝 综合Agent: 生成综述报告与引用图谱...", expanded=True)
-    outputs = synthesizer.run(topic)
-    status.update(label="📝 综合Agent完成: 报告+表格+图谱已生成", state="complete")
-
-    # ---- 6. 证据定位（方案一：证据链穿透）----
-    status = st.status("📎 证据定位: 定位引用到PDF页面并高亮...", expanded=True)
-    from agents import evidence_locator
-    cards_raw = json.load(open(
-        os.path.join(config.DATA_DIR, "paper_cards.json"), encoding="utf-8"))
-    reviews_raw = json.load(open(
-        os.path.join(config.DATA_DIR, "review_results.json"),
-        encoding="utf-8"))
-    ev_index = evidence_locator.build_evidence_index(cards_raw, reviews_raw)
-    located_n = sum(1 for v in ev_index.values() if v.get("located"))
-    status.update(label=f"📎 证据定位完成: {located_n}条声明可穿透到PDF原文",
-                  state="complete")
-
-    # ---- 7. 矛盾检测（方案三：学术争议发现）----
-    status = st.status("⚡ 矛盾检测: 在已核验声明间寻找学术争议...",
-                       expanded=True)
-    from agents import conflict_detector
-    conflicts = conflict_detector.run()
-    n_con = sum(1 for c in conflicts if c["relation"] == "contradict")
-    n_ten = len(conflicts) - n_con
-    status.update(
-        label=f"⚡ 矛盾检测完成: 直接矛盾{n_con}处 + 张力{n_ten}处",
-        state="complete")
-
-    # ★关键: 清除数据加载缓存, 否则标签页仍显示上一次主题的旧数据
-    # （load_json/load_text按路径缓存, 流水线覆盖文件后缓存不会自动失效）
+def _finalize_pipeline():
+    """子进程结束后: 读取状态文件恢复会话, 清缓存并刷新页面"""
+    status = _read_status()
+    state = status.get("state", "unknown")
+    # 清除数据加载缓存(流水线覆盖了data/文件, 缓存不失效会显示旧数据)
     load_json.clear()
     load_text.clear()
-
-    st.session_state.pipeline_done = True
-    st.session_state.run_outputs["topic"] = topic
-    llm_client.print_usage()
-
-    # ★关键: 强制页面重新执行。原因: 本脚本从上到下运行, 侧边栏按钮触发
-    # 流水线时, 主区域的旧数据早已加载完毕; 不rerun的话本次显示仍是旧结果
+    st.session_state.pipeline_running = False
+    st.session_state["pipeline_finalized"] = True
+    st.session_state["pipeline_last_state"] = state
+    st.session_state["pipeline_last_msg"] = status.get("msg", "")
+    if state == "done":
+        st.session_state.pipeline_done = True
+        st.session_state.run_outputs["topic"] = status.get("topic", "")
+    # 模式检索的名词速查表由worker落盘, 恢复进会话供论文原文页使用
+    try:
+        gpath = os.path.join(config.DATA_DIR, "glossary_last.json")
+        if os.path.exists(gpath):
+            g = json.load(open(gpath, encoding="utf-8"))
+            if g.get("topic") == status.get("topic"):
+                st.session_state.glossary_md = g.get("md", "")
+                st.session_state.glossary_topic = g.get("topic")
+    except Exception:
+        pass
+    st.session_state.pop("pipeline_proc", None)
     st.rerun()
+
+
+def _echo_progress_to_terminal():
+    """把worker的进度事件转发打印到Streamlit主终端。
+    方案二后流水线在子进程中运行, 其print只进data/pipeline_stdout.log;
+    这里由UI进程读取进度文件(pipeline_progress.jsonl), 把新增事件
+    打印到主终端——终端重新能看到[检索Agent]等运行内容"""
+    path = os.path.join(config.DATA_DIR, "pipeline_progress.jsonl")
+    try:
+        off = st.session_state.get("_prog_echo_off", 0)
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        if size < off:                  # 新一轮运行重置了进度文件
+            off = 0
+        if size > off:
+            with open(path, encoding="utf-8") as f:
+                f.seek(off)
+                chunk = f.read()
+            st.session_state["_prog_echo_off"] = size
+            for ln in chunk.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    ev = json.loads(ln)
+                    print(f"[流水线] [{ev.get('t', '')}] "
+                          f"[{ev.get('stage', '')}] {ev.get('msg', '')}",
+                          flush=True)
+                except Exception:
+                    print("[流水线] " + ln, flush=True)
+    except Exception:
+        pass
+
+
+def _terminate_pid(pid: int):
+    """终止"收养"的worker(页面刷新后进程句柄丢失, 只剩PID文件):
+    同样两段式——先置取消标志优雅退出, 10秒后taskkill硬终止"""
+    with open(_CANCEL_FLAG, "w", encoding="utf-8") as f:
+        f.write("cancel")
+    for _ in range(20):                 # 最多等10秒
+        if _alive_worker_pid() is None:
+            break
+        time.sleep(0.5)
+    _pid_now = _alive_worker_pid()
+    if _pid_now is not None:
+        subprocess.run(["taskkill", "/F", "/PID", str(_pid_now)],
+                       capture_output=True)
+    st.toast("检索已终止", icon="⏹")
+
+
+def _render_run_panel():
+    """运行面板: 运行中显示实时阶段+终止按钮; 结束后显示结果横幅。
+    以st.fragment(run_every=3)运行, 每3秒自动刷新且不阻塞页面交互。
+    支持收养: 页面刷新后进程句柄丢失, 靠PID文件继续显示进度并可终止"""
+    proc = st.session_state.get("pipeline_proc")
+    adopted = None
+    if proc is None:
+        adopted = _alive_worker_pid()   # 其他会话/刷新前启动的运行
+        if adopted is None:
+            return
+    _echo_progress_to_terminal()        # 进度同步到主终端
+    status = _read_status()
+    alive = proc.poll() is None if proc else True
+    if alive:
+        st.warning(f"⏳ 流水线运行中（独立进程, 关闭网页不影响执行）: "
+                   f"**{status.get('stage', '初始化')}** — "
+                   f"{status.get('msg', '')}")
+        _c1, _c2 = st.columns(2)
+        if _c1.button("⏹ 终止检索", type="primary",
+                      use_container_width=True):
+            if proc:
+                _terminate_pipeline()
+            else:
+                _terminate_pid(adopted)
+        if _c2.button("🔄 刷新进度", use_container_width=True):
+            pass                        # 点击本身即触发重跑刷新
+        st.caption("终止为两段式: 先通知子进程在阶段边界优雅退出"
+                   "（已完成论文的成果全部保留），10秒后仍未退出则强制结束")
+    else:
+        state = status.get("state", "unknown")
+        if state == "done":
+            st.success(f"✅ 流水线完成（幻觉率 {status.get('hallucination_rate', 0):.1%}），"
+                       "正在加载结果...")
+        elif state == "cancelled":
+            st.warning(f"⏹ 检索已终止: {status.get('msg', '')}")
+        elif state == "error":
+            st.error(f"❌ 流水线出错: {status.get('msg', '')}"
+                     "（详见data/pipeline_stdout.log）")
+        try:
+            st.rerun(scope="app")       # 触发整页重跑 → _finalize_pipeline
+        except Exception:
+            pass                        # 旧版本Streamlit: 用户点击任意元素后收尾
+
+
+# fragment装饰只做一次(每次脚本重跑重复装饰会注册出多个同名fragment)
+if hasattr(st, "fragment"):
+    _render_run_panel_frag = st.fragment(run_every=3)(_render_run_panel)
+else:
+    _render_run_panel_frag = _render_run_panel
 
 
 # ---------------------------------------------------------------
@@ -472,23 +544,21 @@ with st.sidebar:
 
     col1, col2 = st.columns(2)
     with col1:
-        # ★运行锁: 防止并发流水线（2026-09-04实测教训）
-        # searcher.run()内不调用st.*函数，Streamlit无法中断旧运行——
-        # 流水线执行中再点按钮会并发起新运行，多个运行同时轰击
-        # OpenAlex触发429限流，速度反而暴慢。必须显式加锁。
+        # 运行锁: 防止并发流水线(子进程同时多个会触发API限流)。
+        # 方案二后流水线在独立进程中运行, 点"终止检索"即可结束。
         running = st.session_state.get("pipeline_running", False)
         if st.button("🚀 完整运行", type="primary", use_container_width=True,
-                         disabled=running,
-                         help="运行中请耐心等待，重复点击会触发API限流"):
-                st.session_state.pipeline_running = True
-                try:
-                    with st.spinner("流水线运行中..."):
-                        run_pipeline(topic, target_count,
-                                     _retrieval_mode, mode_years_sidebar)
-                finally:
-                    st.session_state.pipeline_running = False
+                     disabled=running,
+                     help="流水线在独立进程中运行, 运行中可随时终止"):
+            _started = start_pipeline_subprocess(topic, target_count,
+                                                 _retrieval_mode,
+                                                 mode_years_sidebar)
+            st.session_state.pipeline_running = True
+            st.session_state.pipeline_last_state = None
+            st.session_state.pipeline_last_msg = ""
+            st.rerun()
         if running:
-            st.info("⏳ 流水线正在执行中，请等待完成后再操作页面")
+            st.info("⏳ 流水线运行中, 进度与终止按钮见页面顶部面板")
     with col2:
         if st.button("📂 载入已有结果", use_container_width=True,
                      help="直接展示data/和output/目录下的历史产出"):
@@ -519,11 +589,36 @@ with st.sidebar:
 """)
 
 # ---------------------------------------------------------------
+# 流水线运行状态: 收尾检查 + 运行面板（方案二）
+# ---------------------------------------------------------------
+_proc = st.session_state.get("pipeline_proc")
+if (_proc is not None and _proc.poll() is not None
+        and not st.session_state.get("pipeline_finalized", False)):
+    _finalize_pipeline()            # 本会话子进程已退出 → 恢复会话/清缓存/刷新
+# 收养场景收尾: 刷新后句柄丢失, 依据状态文件判断结束并收尾
+if (_proc is None and st.session_state.get("pipeline_running")
+        and not st.session_state.get("pipeline_finalized", False)
+        and _read_status().get("state") in ("done", "cancelled", "error")):
+    _finalize_pipeline()
+if (st.session_state.get("pipeline_proc") is not None
+        or _alive_worker_pid() is not None):
+    _render_run_panel_frag()        # 运行中: 实时进度面板(每3秒自动刷新)
+
+# ---------------------------------------------------------------
 # 主区域: 结果展示标签页
 # ---------------------------------------------------------------
 # 显示本次结果对应的主题（从会话状态取; 载入历史结果时显示通用标题）
 _result_topic = st.session_state.run_outputs.get("topic", "历史结果")
 st.title(f"📚 研究综述: {_result_topic}")
+
+# 上一次流水线的结束状态横幅(完成/终止/出错)
+_last_state = st.session_state.get("pipeline_last_state")
+if _last_state == "cancelled":
+    st.warning(f"⏹ 上次检索已终止: "
+               f"{st.session_state.get('pipeline_last_msg', '')}")
+elif _last_state == "error":
+    st.error(f"❌ 上次流水线出错: "
+             f"{st.session_state.get('pipeline_last_msg', '')}")
 
 if not st.session_state.pipeline_done:
     # 开始检索的页面: 检索一律通过侧边栏流水线发起（用户要求:
