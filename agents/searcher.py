@@ -44,6 +44,7 @@ import os
 import re
 import time
 import json
+import threading
 import html as _htmllib
 
 import requests
@@ -1503,7 +1504,147 @@ def _oa_title_query(title: str) -> str:
     return " ".join(cleaned.split())[:200]
 
 
-def search(plan: SearchPlan, results_per_query: int = 10) -> list[PaperMeta]:
+# ================================================================
+# 检索并行度提升（2026-10-15）: 关键词级并行 + 源级限速保护
+# ================================================================
+# 各数据源的限速语义不同, 并行化后必须保住它们的"礼貌承诺":
+#   - S2     : 认证模式硬限速1req/s + 共享熔断状态 → 全局串行锁
+#   - arXiv  : 官方礼貌限速3s/次 → 全局串行锁
+#   - OpenAlex: 礼貌间隔0.3s但额度宽松 → 信号量限并发3
+#              (双路并行+跨关键词并行时真实提速, 总速率仍保守)
+#   - Crossref: 官方声明无限额 → 信号量限并发3
+# 实现方式: wrapper包住四个_search入口, 各Agent内部代码零改动。
+_S2_LOCK = threading.Lock()
+_ARXIV_LOCK = threading.Lock()
+_OA_SEM = threading.Semaphore(3)
+_CR_SEM = threading.Semaphore(3)
+
+_s2_search_impl = _s2_search
+_arxiv_search_impl = _arxiv_search
+_openalex_search_impl = _openalex_search
+_crossref_search_impl = _crossref_search
+
+
+def _s2_search(kw, limit, year_from=None):
+    """S2检索入口(线程安全版): 全局串行, 保住1req/s限速+熔断语义"""
+    with _S2_LOCK:
+        return _s2_search_impl(kw, limit, year_from)
+
+
+def _arxiv_search(kw, limit):
+    """arXiv检索入口(线程安全版): 全局串行, 保住3s/次官方限速"""
+    with _ARXIV_LOCK:
+        return _arxiv_search_impl(kw, limit)
+
+
+def _openalex_search(kw, limit, year_from=None, sort_mode="cited",
+                     collect_citations=True):
+    """OpenAlex检索入口(线程安全版): 并发≤3, 双路/跨关键词可真并行"""
+    with _OA_SEM:
+        return _openalex_search_impl(kw, limit, year_from, sort_mode,
+                                     collect_citations)
+
+
+def _crossref_search(kw, limit, year_from=None):
+    """Crossref检索入口(线程安全版): 并发≤3"""
+    with _CR_SEM:
+        return _crossref_search_impl(kw, limit, year_from)
+
+
+def _fetch_kw_routes(kw, source, results_per_query, year_from):
+    """
+    单关键词的数据源检索（只做网络调用与降级链, 不做去重合并）
+
+    2026-10-15并行化改造时从search()循环体提取: 有状态操作(去重/
+    排名/别名归并)留在主线程串行执行, 语义与旧串行版完全一致。
+    各API入口由模块级锁/信号量保证限速语义(见上方wrapper)。
+
+    参数:
+        kw: 检索词
+        source: 进入本关键词时的数据源状态(None=未探测)
+        results_per_query: 每词检索条数
+        year_from: 年份下限(无则None)
+
+    返回:
+        (本关键词实际使用的数据源, routes列表)
+        routes: [(route_name, [PaperMeta...]), ...]
+    """
+    budget.check("检索Agent(关键词检索)")
+    print(f"[检索Agent] 正在检索: {kw} ...")
+
+    if source == "openalex":
+        # 已确认OpenAlex主源: cited+relevance双路并行(信号量下真并行,
+        # 单关键词耗时直接减半——这是检索提速的主要来源之一)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_cited = ex.submit(_openalex_search, kw, results_per_query,
+                                year_from, "cited", True)
+            f_rel = ex.submit(_openalex_search, kw, results_per_query,
+                              year_from, "relevance", False)
+            cited_res, rel_res = f_cited.result(), f_rel.result()
+        if cited_res or rel_res:
+            return source, [("cited", cited_res), ("relevance", rel_res)]
+        # OpenAlex双路均空(429风暴熔断/网络异常): 降级Crossref -> arXiv
+        # (与旧串行版2026-09-14修复的降级链一致)
+        cited_res = _crossref_search(kw, results_per_query, year_from)
+        if cited_res:
+            print("[检索Agent] OpenAlex不可用, 数据源切换: "
+                  "Crossref(免密钥第二主源)")
+            return "crossref", [("cited", cited_res)]
+        cited_res = _arxiv_search(kw, results_per_query)
+        print("[检索Agent] OpenAlex/Crossref均不可用, "
+              "数据源切换: arXiv官方API")
+        return "arxiv", [("cited", cited_res)]
+
+    # ---- 数据源检索与降级链（逻辑与旧串行版一致, used精确跟踪实际源）----
+    # 数据源优先级: S2认证(稳定1req/s) -> OpenAlex($0.1/天额度易烧穿)
+    # -> Crossref(免密钥无限额) -> arXiv(间歇性阻断)
+    used = source  # 本关键词实际使用的数据源(降级时更新)
+    if source is None or source == "s2":
+        cited_res = _s2_search(kw, results_per_query, year_from)
+        if cited_res:
+            used = "s2"
+            if source is None:
+                print(f"[检索Agent] 数据源选定: Semantic Scholar"
+                      f"(认证模式"
+                      f"{f', 年份下限{year_from}' if year_from else ''})")
+        else:
+            # S2失败(首轮不可用/中途429熔断): 逐级降级
+            cited_res = _openalex_search(kw, results_per_query,
+                                         year_from, sort_mode="cited")
+            if cited_res:
+                used = "openalex"
+                print("[检索Agent] S2不可用, 数据源切换: "
+                      "OpenAlex双路检索")
+            else:
+                cited_res = _crossref_search(kw, results_per_query, year_from)
+                if cited_res:
+                    used = "crossref"
+                    print("[检索Agent] S2/OpenAlex均不可用, "
+                          "数据源切换: Crossref(免密钥第二主源)")
+                else:
+                    cited_res = _arxiv_search(kw, results_per_query)
+                    used = "arxiv"
+                    print("[检索Agent] 所有元数据源均不可用, "
+                          "数据源切换: arXiv官方API")
+    elif source == "crossref":
+        cited_res = _crossref_search(kw, results_per_query, year_from)
+        used = "crossref"
+    elif source == "arxiv":
+        cited_res = _arxiv_search(kw, results_per_query)
+        used = "arxiv"
+
+    # ---- 组装routes: OpenAlex双路(cited+relevance), 其余单路 ----
+    if used == "openalex":
+        rel_res = _openalex_search(kw, results_per_query, year_from,
+                                   sort_mode="relevance",
+                                   collect_citations=False)
+        return used, [("cited", cited_res), ("relevance", rel_res)]
+    return used, [("cited", cited_res)]
+
+
+def search(plan: SearchPlan, results_per_query: int = 10,
+           fast: bool = False) -> list[PaperMeta]:
     """
     按检索计划逐个关键词检索，多路结果RRF融合排序。
 
@@ -1538,83 +1679,50 @@ def search(plan: SearchPlan, results_per_query: int = 10) -> list[PaperMeta]:
     source = None    # 数据源状态: None=未决定
     year_from = _parse_year_from(plan.inclusion_criteria)
 
-    for kw in plan.keywords:
-        budget.check("检索Agent(关键词检索)")  # 每个检索词前检查全局预算
-        print(f"[检索Agent] 正在检索: {kw} ...")
+    # 快速模式跳过S2(2026-10-15 S2稳定通道): S2认证模式的429风暴+
+    # 熔断5分钟是检索耗时的最大不确定因素。快速档直接从OpenAlex
+    # 起步(限速宽松+双路并行), 首跑时间可预期; S2只在深度模式使用
+    # (其relevance排序质量更好, 值得等待)。
+    if fast:
+        source = "openalex"
+        print("[检索Agent] ⚡快速模式: 跳过S2, 直接OpenAlex双路检索"
+              "(OpenAlex限速宽松, 也可并发)")
+
+    # ---- 关键词检索: 首词串行探测数据源, 其余并行(2026-10-15提速) ----
+    # 首个关键词串行执行以探测可用数据源(与旧版首轮语义一致);
+    # 剩余关键词最多3线程并行——各API入口的锁/信号量保证限速语义
+    # (S2/arXiv源内全局串行, OpenAlex/Crossref并发≤3), 去重合并等
+    # 有状态操作留在下方主线程串行, 结果与旧串行版完全一致。
+    kw_routes_list = []  # [(routes, 本词实际源), ...]与plan.keywords同序
+    if plan.keywords:
+        from concurrent.futures import ThreadPoolExecutor
+        # 探测轮: 第一个关键词串行, 确定数据源
+        _used, _routes = _fetch_kw_routes(plan.keywords[0], source,
+                                          results_per_query, year_from)
+        if _used:
+            source = _used  # 全局source更新(供引用链挖掘等后续阶段使用)
+        kw_routes_list.append((_routes, _used))
+        rest = plan.keywords[1:]
+        if len(rest) > 1:
+            print(f"[检索Agent] 并行检索: 剩余{len(rest)}组关键词"
+                  f"(S2/arXiv源内自动串行保限速, OpenAlex/Crossref并发≤3)")
+            with ThreadPoolExecutor(max_workers=min(3, len(rest))) as ex:
+                futs = [ex.submit(_fetch_kw_routes, kw, _used,
+                                  results_per_query, year_from)
+                        for kw in rest]
+                for f in futs:
+                    # fetch返回(used, routes), 统一转成(routes, used)入列
+                    _u, _r = f.result()
+                    kw_routes_list.append((_r, _u))
+        else:
+            for kw in rest:
+                _u, _r = _fetch_kw_routes(kw, _used, results_per_query,
+                                          year_from)
+                kw_routes_list.append((_r, _u))
+
+    # ---- 去重合并(主线程串行, 逻辑与旧版逐行一致) ----
+    for routes, _src in kw_routes_list:
         kw_hit_ids = set()  # 本关键词命中的论文（用于跨关键词加成）
-
-        # ---- 数据源检索（每个关键词都要执行，含cited路!）----
-        # 注意: 旧版bug是cited_res只在第一个关键词赋值，后续关键词
-        # 复用kw1的旧结果导致cited路"从未真正执行"（Surrogate
-        # Gradient被引149却显示被引0的根因，2026-09-04修复）
-        # 数据源优先级(2026-09-10任务2起): S2认证(稳定1req/s) ->
-        # OpenAlex($0.1/天额度易烧穿) -> Crossref(免密钥无限额) ->
-        # arXiv(间歇性阻断)。Crossref插在OpenAlex之后: 期刊版论文
-        # 下载要靠arXiv救援（成功率低于arXiv直检），但胜在无限额
-        # 稳定——OpenAlex熔断当天Crossref照样能出候选
-        if source is None or source == "s2":
-            cited_res = _s2_search(kw, results_per_query, year_from)
-            if cited_res:
-                if source is None:
-                    source = "s2"
-                    print(f"[检索Agent] 数据源选定: Semantic Scholar"
-                          f"(认证模式"
-                          f"{f', 年份下限{year_from}' if year_from else ''})")
-            else:
-                # S2失败（首轮即不可用，或中途429熔断）: 降级OpenAlex双路。
-                # 注意source=="s2"时也要走这里——否则熔断后剩余关键词
-                # 会拿到空结果静默丢失（2026-09-09熔断器引入时修复）
-                cited_res = _openalex_search(kw, results_per_query,
-                                             year_from, sort_mode="cited")
-                if cited_res:
-                    source = "openalex"
-                    print("[检索Agent] S2不可用, 数据源切换: "
-                          "OpenAlex双路检索")
-                else:
-                    # OpenAlex也不可用（额度熔断/网络失败）: Crossref接管
-                    cited_res = _crossref_search(kw, results_per_query,
-                                                 year_from)
-                    if cited_res:
-                        source = "crossref"
-                        print("[检索Agent] S2/OpenAlex均不可用, "
-                              "数据源切换: Crossref(免密钥第二主源)")
-                    else:
-                        source = "arxiv"
-                        print("[检索Agent] 所有元数据源均不可用, "
-                              "数据源切换: arXiv官方API")
-                        cited_res = _arxiv_search(kw, results_per_query)
-        elif source == "openalex":
-            cited_res = _openalex_search(kw, results_per_query, year_from,
-                                         sort_mode="cited")
-            if not cited_res:
-                # OpenAlex中途失败（429风暴熔断/网络异常）: 降级
-                # Crossref -> arXiv（与S2分支同款修复——否则熔断后
-                # 剩余关键词静默拿空结果，2026-09-14修复）
-                cited_res = _crossref_search(kw, results_per_query, year_from)
-                if cited_res:
-                    source = "crossref"
-                    print("[检索Agent] OpenAlex不可用, 数据源切换: "
-                          "Crossref(免密钥第二主源)")
-                else:
-                    source = "arxiv"
-                    print("[检索Agent] OpenAlex/Crossref均不可用, "
-                          "数据源切换: arXiv官方API")
-                    cited_res = _arxiv_search(kw, results_per_query)
-        elif source == "crossref":
-            cited_res = _crossref_search(kw, results_per_query, year_from)
-        else:
-            cited_res = _arxiv_search(kw, results_per_query)
-
-        if source == "openalex":
-            # ---- 双路检索: 影响力路 + 相关性路 ----
-            rel_res = _openalex_search(kw, results_per_query, year_from,
-                                       sort_mode="relevance",
-                                       collect_citations=False)
-            routes = [("cited", cited_res), ("relevance", rel_res)]
-        else:
-            # S2/arXiv只有单路（其API自带relevance排序）
-            routes = [("cited", cited_res)]
-
         for route_name, results in routes:
             if not results:
                 continue
@@ -1646,7 +1754,6 @@ def search(plan: SearchPlan, results_per_query: int = 10) -> list[PaperMeta]:
         # 本关键词命中数累计（跨路去重后计数）
         for pid in kw_hit_ids:
             kw_hit_count[pid] = kw_hit_count.get(pid, 0) + 1
-        time.sleep(1)  # 检索词之间留礼貌间隔
 
     # ---- 引用链挖掘（第3路信号: 召回关键词检索不到的奠基经典）----
     # 奠基论文的标题/摘要不含现代检索词（如SpikeProp的摘要里没有
@@ -1655,7 +1762,9 @@ def search(plan: SearchPlan, results_per_query: int = 10) -> list[PaperMeta]:
     # 该路只能走OpenAlex（referenced_works引用图谱是独有能力）。
     # S2主源时种子无openalex_id，先按标题反查解析（12篇封顶）；
     # OpenAlex额度耗尽时熔断器让解析/挖掘自动整体跳过。
-    if source in ("s2", "openalex"):
+    # 快速模式(2026-10-15): 引用链挖掘是检索段最大耗时项之一
+    # (30-40个OpenAlex请求), 快速档跳过——经典召回让位给首跑速度。
+    if not fast and source in ("s2", "openalex"):
         seed_pool = sorted(
             [p for p in seen.values()],
             key=lambda p: (kw_hit_count.get(p.arxiv_id, 0), p.cited_by),
@@ -1691,7 +1800,8 @@ def search(plan: SearchPlan, results_per_query: int = 10) -> list[PaperMeta]:
     # OpenAlex对最老论文（1990s-2000s）的引用图谱残缺，共被引统计
     # 召回不到它们（SpikeProp真实被引2000+但图谱只记144）。规划Agent
     # 的领域知识给出经典标题清单，这里按标题反查OpenAlex确认收录
-    if plan.classic_titles:
+    # 快速模式: 同样跳过(每篇经典一次标题反查请求)。
+    if not fast and plan.classic_titles:
         injected = _inject_classics(plan.classic_titles, seen)
         if injected:
             # 注入的经典作为第4路排名融入RRF（按被引数降序）
@@ -2141,13 +2251,18 @@ def _composite_sort(papers: list[PaperMeta]) -> list[PaperMeta]:
 
 
 def run(plan: SearchPlan, results_per_query: int = 10,
-        threshold: float = 4.0, top_k: int | None = None) -> list[PaperMeta]:
+        threshold: float = 4.0, top_k: int | None = None,
+        fast: bool = False) -> list[PaperMeta]:
     """
     检索Agent完整流水线: 检索 -> 粗筛 -> 下载
 
     参数:
         plan: 检索计划
         top_k: 最终最多保留的论文数（None=不限制，默认取plan.target_count）
+        fast: 快速模式(2026-10-15双模式改造)——每组关键词只取前5条、
+              跳过引用链挖掘与经典注入。首跑耗时约减半(约2-3分钟档),
+              代价是奠基经典召回率下降(答辩演示/快速试跑用快速档,
+              正式研究用深度档=默认)
 
     返回:
         list[PaperMeta]，已下载到本地
@@ -2157,7 +2272,11 @@ def run(plan: SearchPlan, results_per_query: int = 10,
     # 检索量随目标动态放大: 每个检索词取 max(results_per_query, top_k*2) 条，
     # 保证粗筛淘汰一半、下载再损失一部分后仍够top_k篇
     per_query = max(results_per_query, top_k * 2)
-    all_candidates = search(plan, per_query)
+    if fast:
+        # 快速模式: 每组关键词只取前5条(候选池小→各段都更快)
+        per_query = min(per_query, 5)
+        print("[检索Agent] ⚡快速模式: 每词取5条, 跳过引用链挖掘与经典注入")
+    all_candidates = search(plan, per_query, fast=fast)
     papers = filter_papers(plan, all_candidates, threshold)
 
     # ---- 自适应及格线 ----

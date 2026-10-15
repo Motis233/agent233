@@ -81,7 +81,8 @@ def save_json(path: str, obj):
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
-def run_pipeline(topic: str, top_k: int, mode: str, years: int):
+def run_pipeline(topic: str, top_k: int, mode: str, years: int,
+                 fast: bool = False):
     """完整流水线（与原app.py内联版逻辑一致, UI替换为文件进度）"""
     from agents import planner, searcher, extractor, reviewer, synthesizer
 
@@ -113,7 +114,17 @@ def run_pipeline(topic: str, top_k: int, mode: str, years: int):
         check_cancel()
         log(f"检索Agent: 下载论文PDF中（检索词: {', '.join(plan.keywords)}）...",
             stage="检索")
-        papers = searcher.run(plan, results_per_query=8, top_k=top_k)
+        # fast=快速模式(2026-10-15双模式): 每词5条+跳过引用链/经典注入,
+        # 检索段约减半; 深度模式(默认)=全信号召回
+        papers = searcher.run(plan, results_per_query=8, top_k=top_k,
+                              fast=fast)
+        # 论文清单实时落盘(2026-10-15流式展示): 运行面板读此文件
+        # 即时上屏检索成果, 用户不用等提取/审查/综合完成
+        save_json(os.path.join(config.DATA_DIR, "pipeline_papers.json"),
+                  [{"arxiv_id": p.arxiv_id, "title": p.title,
+                    "year": p.year, "cited_by": p.cited_by,
+                    "arxiv_only": getattr(p, "arxiv_only", True)}
+                   for p in papers])
     else:
         check_cancel()
         papers = searcher.download(papers)
@@ -176,14 +187,19 @@ def run_pipeline(topic: str, top_k: int, mode: str, years: int):
     located_n = sum(1 for v in ev_index.values() if v.get("located"))
     log(f"证据定位完成: {located_n}条声明可穿透到PDF原文", stage="证据定位")
 
-    # ---- 7. 矛盾检测（方案三: 学术争议发现）----
-    check_cancel()
-    log("矛盾检测: 在已核验声明间寻找学术争议...", stage="矛盾检测")
-    from agents import conflict_detector
-    conflicts = conflict_detector.run()
-    n_con = sum(1 for c in conflicts if c["relation"] == "contradict")
-    log(f"矛盾检测完成: 直接矛盾{n_con}处 + 张力{len(conflicts) - n_con}处",
-        stage="矛盾检测")
+    # ---- 7. 矛盾检测（方案三: 学术争议发现; 快速模式跳过省时）----
+    if fast:
+        log("⚡快速模式: 跳过矛盾检测", stage="矛盾检测")
+        # 落盘空结果, 避免上一主题的conflicts.json残留误导下游展示
+        save_json(os.path.join(config.DATA_DIR, "conflicts.json"), [])
+    else:
+        check_cancel()
+        log("矛盾检测: 在已核验声明间寻找学术争议...", stage="矛盾检测")
+        from agents import conflict_detector
+        conflicts = conflict_detector.run()
+        n_con = sum(1 for c in conflicts if c["relation"] == "contradict")
+        log(f"矛盾检测完成: 直接矛盾{n_con}处 + 张力{len(conflicts) - n_con}处",
+            stage="矛盾检测")
 
     return report
 
@@ -195,6 +211,8 @@ def main():
     ap.add_argument("--mode", default="standard",
                     choices=["standard", "mode1", "mode2", "mode3"])
     ap.add_argument("--years", type=int, default=2)
+    ap.add_argument("--fast", action="store_true",
+                    help="快速模式: 每词5条+跳过引用链/经典注入/矛盾检测")
     args = ap.parse_args()
 
     # 清理上一轮的取消标志(每次启动都是新任务)
@@ -217,7 +235,8 @@ def main():
     # 按钮兜底, 预算再提供第二道保险+明确的失败阶段标注)
     budget.start(config.GLOBAL_BUDGET_MIN)
     try:
-        report = run_pipeline(args.topic, args.top_k, args.mode, args.years)
+        report = run_pipeline(args.topic, args.top_k, args.mode,
+                              args.years, fast=args.fast)
         import llm_client
         llm_client.print_usage()
         write_status("done", stage="完成", msg="全部阶段执行完毕",

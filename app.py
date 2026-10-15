@@ -350,7 +350,8 @@ def _alive_worker_pid():
 
 def start_pipeline_subprocess(topic: str, target_count: int,
                               retrieval_mode: str = "standard",
-                              mode_years: int = 2) -> bool:
+                              mode_years: int = 2,
+                              fast: bool = False) -> bool:
     """启动子进程流水线: 清理旧状态文件 → Popen → 句柄存入会话。
     返回False=已有worker在跑, 本次启动被拒绝(跨进程运行锁)"""
     _old_pid = _alive_worker_pid()
@@ -366,6 +367,8 @@ def start_pipeline_subprocess(topic: str, target_count: int,
     cmd = [sys.executable, _WORKER,
            "--topic", topic, "--top_k", str(target_count),
            "--mode", retrieval_mode, "--years", str(mode_years)]
+    if fast:
+        cmd.append("--fast")   # 快速模式: 每词5条+跳过引用链/经典注入/矛盾检测
     # stdout/stderr重定向到日志文件, 供诊断(worker的详细打印都在这里)
     logf = open(os.path.join(config.DATA_DIR, "pipeline_stdout.log"),
                 "w", encoding="utf-8")
@@ -374,6 +377,8 @@ def start_pipeline_subprocess(topic: str, target_count: int,
     st.session_state["pipeline_proc"] = proc
     st.session_state["pipeline_finalized"] = False
     st.session_state["_prog_echo_off"] = 0      # 终端回显从头开始
+    # 运行起始时间: 实时成果流据此判断data/下哪些文件属于本次运行
+    st.session_state["pipeline_started_at"] = time.time()
     return True
 
 
@@ -473,6 +478,60 @@ def _terminate_pid(pid: int):
     st.toast("检索已终止", icon="⏹")
 
 
+def _render_live_outputs():
+    """运行中的实时成果流(2026-10-15体验改造): 不再干等终稿——
+    检索到的论文清单/已提取卡片数/综述生成状态即时上屏。
+    通过文件mtime与运行起始时间比对, 只显示本次运行的新产物
+    (不走load_json缓存, 每次直读最新内容)"""
+    started = st.session_state.get("pipeline_started_at", 0)
+
+    def _fresh(path):
+        try:
+            return os.path.getmtime(path) > started
+        except OSError:
+            return False
+
+    shown = False
+    # 1) 检索完成的论文清单(worker检索后即落盘)
+    pfile = os.path.join(config.DATA_DIR, "pipeline_papers.json")
+    if _fresh(pfile):
+        try:
+            with open(pfile, encoding="utf-8") as f:
+                papers = json.load(f)
+            if papers:
+                shown = True
+                st.markdown(f"**📄 已检索到 {len(papers)} 篇论文** "
+                            "(PDF已下载, 提取中...)")
+                with st.expander("查看论文清单", expanded=False):
+                    for p in papers[:12]:
+                        st.markdown(
+                            f"- **{p.get('title', '')[:65]}** "
+                            f"({p.get('year', '?')}, "
+                            f"被引{p.get('cited_by', 0)})")
+                    if len(papers) > 12:
+                        st.caption(f"...等共{len(papers)}篇")
+        except Exception:
+            pass
+    # 2) 提取进度: 卡片文件mtime更新即代表有新卡片
+    cfile = os.path.join(config.DATA_DIR, "paper_cards.json")
+    if _fresh(cfile):
+        try:
+            with open(cfile, encoding="utf-8") as f:
+                cards = json.load(f)
+            if cards:
+                shown = True
+                st.markdown(f"**🃏 已提取 {len(cards)} 张信息卡片** "
+                            "(审查核验中...)")
+        except Exception:
+            pass
+    # 3) 综述报告
+    rfile = os.path.join(config.DATA_DIR, "final_report.md")
+    if _fresh(rfile):
+        shown = True
+        st.markdown("**📝 综述报告已生成** (流水线收尾中...)")
+    return shown
+
+
 def _render_run_panel():
     """运行面板: 运行中显示实时阶段+终止按钮; 结束后显示结果横幅。
     以st.fragment(run_every=3)运行, 每3秒自动刷新且不阻塞页面交互。
@@ -501,6 +560,8 @@ def _render_run_panel():
             pass                        # 点击本身即触发重跑刷新
         st.caption("终止为两段式: 先通知子进程在阶段边界优雅退出"
                    "（已完成论文的成果全部保留），10秒后仍未退出则强制结束")
+        # 实时成果流: 检索/提取成果即时上屏, 不干等终稿
+        _render_live_outputs()
     else:
         state = status.get("state", "unknown")
         if state == "done":
@@ -558,6 +619,21 @@ with st.sidebar:
     if _retrieval_mode == "mode2":
         mode_years_sidebar = st.slider("前沿时间范围（近N年）", 1, 5, 2)
 
+    # 运行深度: 快速/深度双模式(2026-10-15)——快速档每词5条+
+    # 跳过引用链/经典注入/矛盾检测, 首跑约2-3分钟; 深度档=全信号
+    # 召回(引用链挖奠基经典+矛盾检测), 约10分钟。演示用快速,
+    # 正式研究用深度。
+    depth_label = st.radio(
+        "运行深度",
+        ["⚡ 快速（约2-3分钟）", "🔬 深度（约10分钟）"],
+        index=1,
+        help="快速: 每组检索词取前5条, 跳过引用链挖掘/经典注入/矛盾"
+             "检测——适合演示与快速试跑, 代价是老经典论文召回率下降；"
+             "深度: 四路信号全开(含引用链挖掘奠基经典), 适合正式调研",
+        key="depth_radio",
+    )
+    _fast_mode = depth_label.startswith("⚡")
+
     col1, col2 = st.columns(2)
     with col1:
         # 运行锁: 防止并发流水线(子进程同时多个会触发API限流)。
@@ -568,7 +644,8 @@ with st.sidebar:
                      help="流水线在独立进程中运行, 运行中可随时终止"):
             _started = start_pipeline_subprocess(topic, target_count,
                                                  _retrieval_mode,
-                                                 mode_years_sidebar)
+                                                 mode_years_sidebar,
+                                                 fast=_fast_mode)
             st.session_state.pipeline_running = True
             st.session_state.pipeline_last_state = None
             st.session_state.pipeline_last_msg = ""
@@ -636,6 +713,15 @@ if _last_state == "cancelled":
 elif _last_state == "error":
     st.error(f"❌ 上次流水线出错: "
              f"{st.session_state.get('pipeline_last_msg', '')}")
+elif _last_state == "done":
+    # 完成提示(2026-10-15体验改造): 顶部弹横幅告知结果已就绪
+    _d1, _d2 = st.columns([4, 1])
+    _d1.success("✅ 流水线已完成，结果已加载到下方各标签页"
+                "（📚研究综述 / 🃏信息卡片 / 📄论文原文 / 🌐引用图谱）")
+    if _d2.button("知道了", key="dismiss_done_banner",
+                  use_container_width=True):
+        st.session_state["pipeline_last_state"] = None
+        st.rerun()
 
 if not st.session_state.pipeline_done:
     # 开始检索的页面: 检索一律通过侧边栏流水线发起（用户要求:
@@ -707,8 +793,9 @@ def evidence_popover(label: str, arxiv_id: str, claim_index: int,
         )
         img_path = os.path.join(EVIDENCE_DIR, ev["image"])
         if os.path.exists(img_path):
-            st.image(img_path, caption=f"PDF第{page}页 · 黄色高亮=证据原文",
-                     use_column_width=True)
+            # 2026-10-15: use_column_width在Streamlit 1.63已移除,
+            # 图片渲染自带容器宽度约束(max-width), 删参后显示效果不变
+            st.image(img_path, caption=f"PDF第{page}页 · 黄色高亮=证据原文")
         else:
             st.error(f"证据图片缺失: {ev['image']}")
         if quotes:
@@ -1487,8 +1574,7 @@ with tab8:
                                 if _img and os.path.exists(_img):
                                     st.image(_img,
                                              caption=f"第{_h['page'] + 1}页 · "
-                                                     f"黄色高亮=关键词",
-                                             use_column_width=True)
+                                                     f"黄色高亮=关键词")
                                 _j1, _j2 = st.columns([1, 2])
                                 with _j1:
                                     if st.button("📄 跳转原文页",
@@ -1762,7 +1848,6 @@ with tab8:
                     _render_page(pdf_path, _jump_page),
                     caption=f"★ 跳转目标 · 第 {_jump_page + 1} 页 / "
                             f"共 {n_pages} 页 ★",
-                    use_column_width=True,
                 )
                 # 消费后清理跳转标记（刷新后不残留）
                 del st.session_state.pdf_jump_id
@@ -1788,7 +1873,6 @@ with tab8:
                 st.image(
                     _render_page(pdf_path, i),
                     caption=f"—— 第 {i + 1} 页 / 共 {n_pages} 页{_mark} ——",
-                    use_column_width=True,
                 )
                 # 该页笔记紧凑展示（引用+批注各一行）
                 for _pn2 in _pg_notes.get(i, [])[:3]:
