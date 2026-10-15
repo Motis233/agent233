@@ -168,7 +168,7 @@ def extract_card(paper: PaperMeta) -> PaperCard | None:
 # ---------------------------------------------------------------
 # 组合入口：批量提取
 # ---------------------------------------------------------------
-def run(papers: list[PaperMeta], max_workers: int = 3) -> list[PaperCard]:
+def run(papers: list[PaperMeta], max_workers: int = 6) -> list[PaperCard]:
     """
     批量提取所有论文的信息卡片，落盘到 data/paper_cards.json
 
@@ -178,7 +178,9 @@ def run(papers: list[PaperMeta], max_workers: int = 3) -> list[PaperCard]:
 
     参数:
         papers: 已下载PDF的论文元数据列表
-        max_workers: 并行线程数（3为API并发安全值）
+        max_workers: 并行线程数（2026-10-15由3提到6: DeepSeek并发
+                     完全可承受, 提取耗时约降一半; 配合LLM缓存,
+                     命中时并行度不再影响耗时）
 
     返回:
         成功提取的PaperCard列表（保持输入顺序）

@@ -231,7 +231,8 @@ def run(max_pairs: int = 60) -> list[dict]:
             print(f"[矛盾检测] 判定失败: {e}")
             return None
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    # 2026-10-15: 3→6线程, DeepSeek并发可承受, 判定耗时约降一半
+    with ThreadPoolExecutor(max_workers=6) as executor:
         verdicts = list(executor.map(_safe_judge, cands))
 
     # ---- 汇总: 只保留矛盾/张力 ----

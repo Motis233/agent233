@@ -172,7 +172,7 @@ def quote_alignment(quote_text, full_text_norm, fragment_len=80, threshold=0.85)
 # ---------------------------------------------------------------
 REVIEWER_SYSTEM_PROMPT = """你是一位极其严格的批判性审查员，负责核验信息抽取系统输出的忠实性。
 
-你会收到：一条【声明】（抽取系统对论文的概括）和【原文片段】（该声明声称的依据）。
+你会收到：一条【声明】（抽取系统对论文的概括，中文）和【原文片段】（该声明引用的论文原文逐字摘录，多为英文）。
 
 【工作流程——原子事实核验法】
 1. 把声明拆解为1-5条原子事实：每条只含一个可独立判定的断言
@@ -189,7 +189,14 @@ REVIEWER_SYSTEM_PROMPT = """你是一位极其严格的批判性审查员，负�
      （宁暂缓不误判；但片段给了间接线索时必须给出判定，不许逃避）
 4. reason 用一句话说明整体判定理由；confidence 是对声明整体判定的把握(0-1)。
 
-【严格标准——以下都算问题】
+【最容易漏的改错手法——逐词比对重点防范】
+- 偷换名词: "服务导向→平台导向"、"域外→域内"、"通信→协同"、
+  "路径→轨迹"这类单词级替换
+- 偷换数字: 数值、倍数、数量、比例的任何变动
+- 扩大范围: "在某数据集上→在多个数据集上"、"受延迟限制→普遍受延迟限制"
+- 偷换强度: "提出→证明"、"不稳定→普遍不稳定"、"效率→自动化程度"
+
+【判定标准——以下都算问题】
 - 声明中的数字与原文不符（哪怕是四舍五入方向不同）
 - 声明扩大了适用范围（原文说"在X数据集上"，声明说"在多个数据集上"）
 - 声明把"作者提出"写成"作者证明"
@@ -363,7 +370,8 @@ def run(papers: list[PaperMeta], cards: list[PaperCard]) -> list[ReviewResult]:
         return record
 
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    # 2026-10-15: 3→6线程, DeepSeek并发可承受, 核验耗时约降一半
+    with ThreadPoolExecutor(max_workers=6) as executor:
         results = list(executor.map(_verify_one, tasks))
 
     # ---- 落盘 ----
