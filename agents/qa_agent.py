@@ -50,15 +50,21 @@ class QAAnswer(BaseModel):
 # ---------------------------------------------------------------
 def build_claim_pool() -> list[dict]:
     """
-    从 data/ 构建已核验的声明池
+    从 data/ 构建已核验的声明池（阶段5：附带完整证据链）
 
     数据流: paper_cards.json(全部声明) + review_results.json(核验结果)
+          + evidence_index.json(证据定位)
           -> 只保留 verdict==supported 的声明
 
     返回:
-        [{"num": 1, "arxiv_id": ..., "content": ..., "type": ...,
-          "paper_title": ...}, ...]
-        num 从1开始编号（对话中引用 [声明#N] 用）
+        [{"num": 1, "evidence_id": "arxiv#idx", "arxiv_id": ...,
+          "content": ..., "type": ..., "paper_title": ...,
+          "confidence": 核验置信度, "quote": 首条引用原文,
+          "quote_section": 引用出处, "page": 0-based页码或None,
+          "evidence_image": 高亮截图文件名或None}, ...]
+        num 从1开始编号（对话中引用 [声明#N] 用）；
+        evidence_id 与 evidence_index/conflicts 中的声明key完全一致，
+        实现全链路"声明->核验->原文页码"可追溯。
     """
     cards_path = os.path.join(config.DATA_DIR, "paper_cards.json")
     review_path = os.path.join(config.DATA_DIR, "review_results.json")
@@ -68,25 +74,45 @@ def build_claim_pool() -> list[dict]:
     cards = json.load(open(cards_path, encoding="utf-8"))
     reviews = json.load(open(review_path, encoding="utf-8"))
 
-    # 核验通过的声明key集合
-    supported = {
-        f"{r['arxiv_id']}#{r['claim_index']}"
-        for r in reviews
+    # 核验通过的声明详情（带置信度）
+    review_by_key = {
+        f"{r['arxiv_id']}#{r['claim_index']}": r for r in reviews
         if (r.get("verdict") or {}).get("verdict") == "supported"
     }
+
+    # 证据定位索引（页码/高亮截图），缺失不影响声明池构建
+    ev_index = {}
+    ev_path = os.path.join(config.DATA_DIR, "evidence_index.json")
+    if os.path.exists(ev_path):
+        try:
+            with open(ev_path, encoding="utf-8") as f:
+                ev_index = json.load(f)
+        except Exception as e:
+            print(f"[问答Agent] 证据索引加载失败(忽略): {e}")
 
     pool = []
     for card in cards:
         for idx, claim in enumerate(card.get("claims", [])):
-            if f"{card['arxiv_id']}#{idx}" not in supported:
+            key = f"{card['arxiv_id']}#{idx}"
+            r = review_by_key.get(key)
+            if r is None:
                 continue
+            quotes = claim.get("quotes", [])
+            ev = ev_index.get(key, {})
+            located = bool(ev.get("located"))
             pool.append({
                 "num": len(pool) + 1,
+                "evidence_id": key,
                 "arxiv_id": card["arxiv_id"],
                 "paper_title": card.get("title", "")[:60],
                 "year": card.get("year"),
                 "type": claim.get("claim_type"),
                 "content": claim.get("content", ""),
+                "confidence": (r.get("verdict") or {}).get("confidence"),
+                "quote": quotes[0].get("text", "")[:150] if quotes else "",
+                "quote_section": quotes[0].get("section", "") if quotes else "",
+                "page": ev.get("page") if located else None,
+                "evidence_image": ev.get("image") if located else None,
             })
     return pool
 

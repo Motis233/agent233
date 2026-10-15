@@ -1,0 +1,217 @@
+{
+  "_readme": [
+    "固定Benchmark测试集（阶段4）——人工标注的代表性声明，用于离线评测审查器。",
+    "documents: 模拟论文原文片段（英文，含精确句/连字符断行/数字/公式/多句等形态）。",
+    "cases: 每条 = 一个待核验声明。doc 引用 documents 的key，加载时展开为 full_text 与 evidence_text。",
+    "gold_verdict/gold_quote_alignment 为人工标注的地面真值，只用于评测，不参与模型判定。",
+    "gold_vote 计 20 例: supported 12 / unsupported 2 / contradicted 6；对齐 True 14 / False 6。",
+    "评测入口: python benchmark.py（产出写入 data/benchmark/benchmark_report.json）"
+  ],
+  "documents": {
+    "A": "Surrogate gradient learning has emerged as the dominant approach for training spiking neural networks (SNNs) directly on the CIFAR-10 dataset. Our method, SpikeFormer, replaces the non-differentiable Heaviside spike function with a triangular surrogate whose slope is annealed during training. On CIFAR-10, SpikeFormer reaches 95.2% top-1 accuracy with only 4.6 million parameters, improving over prior state of the art by 1.8 percentage points. The model is trained for 300 epochs using the SGD optimizer with a cosine learning rate schedule. Notably, SpikeFormer achieves this accuracy without any attention modules, relying purely on convolutional blocks.",
+    "B": "Memory footprint is a first-class concern for neuromorphic deployment. We evaluate our accelerator on the CIFAR-100 benchmark and report a 3.1x energy reduction compared with the GPU baseline. The proposed pipelining scheme overlaps weight fetching with spike com-\nputation, improving overall perfor-\nmance by 18% on average. Latency remains under 5 ms per inference frame at batch size one.",
+    "C": "Ablation studies on ImageNet-1k show that temporal coding contributes 2.3% of the total accuracy gain, while rate coding contributes 1.1%. The remaining 1.4% comes from the proposed dendritic branching. Training uses 8 NVIDIA A100 GPUs for 72 hours. All experiments are repeated 5 times with different random seeds; we report the mean.",
+    "D": "The training objective combines cross-entropy with an L1 spike-rate regularizer:\n    L = L_ce + lambda * sum_t || s_t ||_1 ,\nwhere s_t denotes the spike map at timestep t and lambda = 0.01. The membrane potential update follows\n    v_t = beta * v_{t-1} * (1 - s_{t-1}) + W x_t .\nGradient propagation uses the atan surrogate: dg/dv = 1 / (pi * (1 + (alpha * v)^2)).",
+    "E": "Motivated by homeostatic plasticity in biological neural systems, we propose Homeo-SNN, which adapts the firing threshold online. We hypothesize that threshold adaptation improves robustness to input rate drift; experiments in Section 4.2 support this hypothesis on the N-Tidigits dataset. We do not evaluate speech recognition on other corpora in this work. Compared with HDD, Homeo-SNN reduces latency by 23% under equal spike budgets. Limitations: the adaptive threshold adds 7% training-time overhead, and our study is restricted to small-scale networks (under 1M neurons).",
+    "F": "Large-scale validation: We train SpikingResNet on ImageNet-1k, CIFAR-10, CIFAR-100 and DVS-Gesture. On ImageNet-1k the 34-layer variant attains 71.5% top-1 accuracy with 4.2 ms per-frame latency on the Loihi 2 processor. On DVS-Gesture it reaches 98.5% accuracy using only 3 timesteps. Training on ImageNet-1k takes 21 GPU-days on A100 hardware. All hyperparameters are listed in Appendix B; no data augmentation beyond random crop and horizontal flip is used."
+  },
+  "cases": [
+    {
+      "case_id": "A1_method_exact",
+      "arxiv_id": "bench-A",
+      "doc": "A",
+      "claim_content": "SpikeFormer采用三角形代理梯度替代不可导的Heaviside脉冲函数进行训练",
+      "quote_text": "replaces the non-differentiable Heaviside spike function with a triangular surrogate",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "A2_number_contradicted",
+      "arxiv_id": "bench-A",
+      "doc": "A",
+      "claim_content": "SpikeFormer在CIFAR-10上达到97.2%的top-1准确率",
+      "quote_text": "On CIFAR-10, SpikeFormer reaches 95.2% top-1 accuracy",
+      "gold_verdict": "contradicted",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "A3_scope_expansion",
+      "arxiv_id": "bench-A",
+      "doc": "A",
+      "claim_content": "SpikeFormer在多个数据集上验证了方法的有效性",
+      "quote_text": "the dominant approach for training spiking neural networks (SNNs) directly on the CIFAR-10 dataset",
+      "gold_verdict": "unsupported",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "A4_case_insensitive_quote",
+      "arxiv_id": "bench-A",
+      "doc": "A",
+      "claim_content": "SpikeFormer没有使用注意力模块，仅依靠卷积模块达到该精度",
+      "quote_text": "spikeformer achieves this accuracy without any attention modules",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "A5_rounding_contradicted",
+      "arxiv_id": "bench-A",
+      "doc": "A",
+      "claim_content": "SpikeFormer在CIFAR-10上的top-1准确率约为96%",
+      "quote_text": "SpikeFormer reaches 95.2% top-1 accuracy",
+      "gold_verdict": "contradicted",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "B1_hyphen_fuzzy",
+      "arxiv_id": "bench-B",
+      "doc": "B",
+      "claim_content": "所提出的流水线方案平均提升整体性能18%",
+      "quote_text": "improving overall performance by 18% on average",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true,
+      "_note": "原文为 perfor-\\nmance 连字符断行，需模糊匹配命中"
+    },
+    {
+      "case_id": "B2_fake_quote_number",
+      "arxiv_id": "bench-B",
+      "doc": "B",
+      "claim_content": "该加速器相比所有已发表的神经形态芯片降低10倍能耗",
+      "quote_text": "Our accelerator reduces energy by 10x compared with all published neuromorphic chips.",
+      "gold_verdict": "contradicted",
+      "gold_quote_alignment": false,
+      "_note": "引用为伪造（原文是3.1x vs GPU baseline），且数字矛盾"
+    },
+    {
+      "case_id": "B3_condition_match",
+      "arxiv_id": "bench-B",
+      "doc": "B",
+      "claim_content": "该加速器在CIFAR-100评测中相比GPU基线降低3.1倍能耗",
+      "quote_text": "We evaluate our accelerator on the CIFAR-100 benchmark and report a 3.1x energy reduction compared with the GPU baseline",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "C1_short_numeric_quote",
+      "arxiv_id": "bench-C",
+      "doc": "C",
+      "claim_content": "时间编码贡献了2.3%的准确率提升",
+      "quote_text": "2.3%",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true,
+      "_note": "短引用+纯数字边界用例：只要逐字存在即可对齐"
+    },
+    {
+      "case_id": "C2_short_numeric_fake",
+      "arxiv_id": "bench-C",
+      "doc": "C",
+      "claim_content": "时间编码贡献了2.8%的准确率提升",
+      "quote_text": "2.8%",
+      "gold_verdict": "contradicted",
+      "gold_quote_alignment": false,
+      "_note": "短数字引用但原文不存在 → 对齐必须失败"
+    },
+    {
+      "case_id": "C3_protocol_supported",
+      "arxiv_id": "bench-C",
+      "doc": "C",
+      "claim_content": "所有实验重复5次并报告均值",
+      "quote_text": "All experiments are repeated 5 times with different random seeds; we report the mean.",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "D1_formula_exact",
+      "arxiv_id": "bench-D",
+      "doc": "D",
+      "claim_content": "膜电位按 v_t = beta*v_{t-1}*(1-s_{t-1}) + W x_t 更新",
+      "quote_text": "v_t = beta * v_{t-1} * (1 - s_{t-1}) + W x_t",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true,
+      "_note": "公式边界用例：符号+花括号的逐字匹配"
+    },
+    {
+      "case_id": "D2_hyperparam_contradicted",
+      "arxiv_id": "bench-D",
+      "doc": "D",
+      "claim_content": "L1脉冲率正则化系数 lambda 设为0.05",
+      "quote_text": "lambda = 0.01",
+      "gold_verdict": "contradicted",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "D3_surrogate_supported",
+      "arxiv_id": "bench-D",
+      "doc": "D",
+      "claim_content": "梯度传播采用atan形式的代理函数",
+      "quote_text": "Gradient propagation uses the atan surrogate",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "E1_prove_vs_propose",
+      "arxiv_id": "bench-E",
+      "doc": "E",
+      "claim_content": "实验证明阈值自适应在所有语音识别任务上普遍有效",
+      "quote_text": "experiments in Section 4.2 support this hypothesis on the N-Tidigits dataset. We do not evaluate speech recognition on other corpora in this work.",
+      "gold_verdict": "unsupported",
+      "gold_quote_alignment": true,
+      "_note": "把单数据集假设验证说成普适证明 → unsupported"
+    },
+    {
+      "case_id": "E2_limitation_supported",
+      "arxiv_id": "bench-E",
+      "doc": "E",
+      "claim_content": "作者承认自适应阈值带来7%的训练时间开销",
+      "quote_text": "the adaptive threshold adds 7% training-time overhead",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "E3_comparison_supported",
+      "arxiv_id": "bench-E",
+      "doc": "E",
+      "claim_content": "在相同脉冲预算下，Homeo-SNN比HDD降低23%延迟",
+      "quote_text": "Compared with HDD, Homeo-SNN reduces latency by 23% under equal spike budgets",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "F1_multisentence_exact",
+      "arxiv_id": "bench-F",
+      "doc": "F",
+      "claim_content": "SpikingResNet-34在ImageNet-1k上达到71.5%准确率，并在Loihi 2处理器上实现4.2ms单帧延迟",
+      "quote_text": "On ImageNet-1k the 34-layer variant attains 71.5% top-1 accuracy with 4.2 ms per-frame latency on the Loihi 2 processor.",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true
+    },
+    {
+      "case_id": "F2_timestep_contradicted",
+      "arxiv_id": "bench-F",
+      "doc": "F",
+      "claim_content": "SpikingResNet在DVS-Gesture上使用10个时间步达到98.5%准确率",
+      "quote_text": "On DVS-Gesture it reaches 98.5% accuracy using only 3 timesteps.",
+      "gold_verdict": "contradicted",
+      "gold_quote_alignment": true,
+      "_note": "实验条件（时间步数）与原文不符"
+    },
+    {
+      "case_id": "F3_paraphrase_quote",
+      "arxiv_id": "bench-F",
+      "doc": "F",
+      "claim_content": "SpikingResNet在ImageNet训练上花费了约三周的GPU时间",
+      "quote_text": "ImageNet training consumed roughly three weeks of GPU resources.",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": false,
+      "_note": "声明内容与原文等价但引用是改写而非逐字 → 对齐必须失败（原文: 21 GPU-days）"
+    },
+    {
+      "case_id": "F4_augmentation_condition",
+      "arxiv_id": "bench-F",
+      "doc": "F",
+      "claim_content": "训练除随机裁剪和水平翻转外不使用任何其他数据增强",
+      "quote_text": "no data augmentation beyond random crop and horizontal flip is used",
+      "gold_verdict": "supported",
+      "gold_quote_alignment": true
+    }
+  ]
+}
