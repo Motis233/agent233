@@ -80,10 +80,14 @@ EVIDENCE_DIR = os.path.join(config.PROJECT_ROOT, "evidence")
 # 密码来源（优先级从高到低）:
 #   1. config.APP_PASSWORD（本地 .env 或环境变量）
 #   2. st.secrets["APP_PASSWORD"]（Streamlit Cloud / HF Spaces 平台 Secrets）
+#   3. 内置默认密码（平台未配置时的兜底，保证密码门一定生效）
+#      ⚠️ 默认值写在公开仓库里，只挡"随手点开链接"的人；正式使用请在
+#      Settings → Secrets 里设自己的 APP_PASSWORD（会自动覆盖默认值）
+DEFAULT_APP_PASSWORD = "agent233"
 try:
-    _pwd = config.APP_PASSWORD or _secret("APP_PASSWORD")
+    _pwd = config.APP_PASSWORD or _secret("APP_PASSWORD") or DEFAULT_APP_PASSWORD
 except Exception:
-    _pwd = config.APP_PASSWORD
+    _pwd = config.APP_PASSWORD or DEFAULT_APP_PASSWORD
 
 if _pwd:
     if "authenticated" not in st.session_state:
@@ -405,6 +409,8 @@ def _finalize_pipeline():
     st.session_state["pipeline_finalized"] = True
     st.session_state["pipeline_last_state"] = state
     st.session_state["pipeline_last_msg"] = status.get("msg", "")
+    # worker把完整traceback写进了状态文件，保留下来供页面展开查看
+    st.session_state["pipeline_last_tb"] = status.get("traceback", "")
     if state == "done":
         st.session_state.pipeline_done = True
         st.session_state.run_outputs["topic"] = status.get("topic", "")
@@ -563,6 +569,10 @@ def _render_run_panel():
         elif state == "error":
             st.error(f"❌ 流水线出错: {status.get('msg', '')}"
                      "（详见data/pipeline_stdout.log）")
+            if status.get("traceback"):
+                with st.expander("🔍 查看完整报错（把这里的内容发我）",
+                                 expanded=True):
+                    st.code(status["traceback"], language="text")
         try:
             st.rerun(scope="app")       # 触发整页重跑 → _finalize_pipeline
         except Exception:
@@ -696,6 +706,13 @@ if (st.session_state.get("pipeline_proc") is not None
 _result_topic = st.session_state.run_outputs.get("topic", "历史结果")
 st.title(f"📚 研究综述: {_result_topic}")
 
+# 配置自检: 没拿到 LLM 密钥时流水线必然失败，这里提前说清楚原因
+if not config.API_KEY:
+    st.error("未检测到 `LLM_API_KEY`，流水线无法调用大模型。"
+             "云端请在 **⋮ → Settings → Secrets** 里添加 "
+             "`LLM_API_KEY = \"sk-你的密钥\"` 后保存；"
+             "本地请填写项目根目录的 `.env` 文件。")
+
 # 上一次流水线的结束状态横幅(完成/终止/出错)
 _last_state = st.session_state.get("pipeline_last_state")
 if _last_state == "cancelled":
@@ -704,6 +721,10 @@ if _last_state == "cancelled":
 elif _last_state == "error":
     st.error(f"❌ 上次流水线出错: "
              f"{st.session_state.get('pipeline_last_msg', '')}")
+    _tb = st.session_state.get("pipeline_last_tb", "")
+    if _tb:
+        with st.expander("🔍 查看完整报错（把这里的内容发我）", expanded=True):
+            st.code(_tb, language="text")
 elif _last_state == "done":
     # 完成提示(2026-10-15体验改造): 顶部弹横幅告知结果已就绪
     _d1, _d2 = st.columns([4, 1])
