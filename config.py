@@ -88,6 +88,12 @@ PAPER_DIR = os.path.join(PROJECT_ROOT, "papers")  # 下载的PDF存放处
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")     # 证据库JSON存放处
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output") # 综合Agent的产出目录(表格/图谱/报告)
 
+# 首次运行时目录可能不存在（papers/data/output 被 .gitignore 排除，
+# 云端克隆下来只有代码）。app.py 会直接往 DATA_DIR 写状态文件和日志，
+# 不先建目录会抛 FileNotFoundError。导入 config 时统一建好。
+for _d in (PAPER_DIR, DATA_DIR, OUTPUT_DIR):
+    os.makedirs(_d, exist_ok=True)
+
 # ---------------------------------------------------------------
 # 四、如果 .env 文件存在，则加载其中未被环境变量覆盖的配置
 # ---------------------------------------------------------------

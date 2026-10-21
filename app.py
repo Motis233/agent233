@@ -47,29 +47,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 本地开发用 .env 文件，云端部署用平台 Secrets（st.secrets 读取）。
 # 这里把云端 secrets 值同步到环境变量，让 config.py 用同一套
 # os.environ 读取逻辑就能拿到值，无需改 config.py
-def _secrets_file_exists() -> bool:
-    """提前探测secrets.toml是否存在——文件缺失时访问st.secrets
-    会向页面渲染警告（try/except拦不住），污染前端界面。"""
-    from pathlib import Path
-    candidates = [
-        Path.home() / ".streamlit" / "secrets.toml",
-        Path.cwd() / ".streamlit" / "secrets.toml",
-        Path(__file__).parent / ".streamlit" / "secrets.toml",
-    ]
-    return any(p.exists() for p in candidates)
-
-
-if _secrets_file_exists():
+def _secret(key: str, default: str = "") -> str:
+    """读取平台 Secrets 的单个键。
+    没有 secrets.toml 时 st.secrets 会抛 StreamlitSecretNotFoundError
+    （不是所有版本都能靠提前探测文件路径覆盖云端位置），这里统一 try/except。"""
     try:
-        _keys_to_sync = ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
-                         "S2_API_KEY", "APP_PASSWORD"]
-        for _k in _keys_to_sync:
-            if _k not in os.environ and _k in st.secrets:
-                os.environ[_k] = st.secrets[_k]
+        return st.secrets.get(key, default)
     except Exception:
-        # secrets 读取异常 → 静默跳过
-        # 密码门会直接查 st.secrets 做兜底，同步失败不影响密码门
-        pass
+        return default
+
+
+_keys_to_sync = ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
+                 "S2_API_KEY", "APP_PASSWORD"]
+for _k in _keys_to_sync:
+    if _k not in os.environ:
+        _v = _secret(_k)
+        if _v:
+            os.environ[_k] = _v
 
 import config
 import budget
@@ -87,10 +81,7 @@ EVIDENCE_DIR = os.path.join(config.PROJECT_ROOT, "evidence")
 #   1. config.APP_PASSWORD（本地 .env 或环境变量）
 #   2. st.secrets["APP_PASSWORD"]（Streamlit Cloud / HF Spaces 平台 Secrets）
 try:
-    _pwd = config.APP_PASSWORD or (
-        st.secrets.get("APP_PASSWORD", "")
-        if _secrets_file_exists() and "APP_PASSWORD" in st.secrets else ""
-    )
+    _pwd = config.APP_PASSWORD or _secret("APP_PASSWORD")
 except Exception:
     _pwd = config.APP_PASSWORD
 
