@@ -179,8 +179,8 @@ def build_graph(papers: list[PaperMeta],
 
     # ---- 尝试真实引用关系（并行获取，串行需每篇1秒间隔+请求耗时）----
     from concurrent.futures import ThreadPoolExecutor
-    # 2026-10-15: 3→6线程(S2引用数据拉取, 多数场景走缓存秒回)
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    # 2026-10-16: 6→10线程(S2引用数据拉取, 多数场景走缓存秒回)
+    with ThreadPoolExecutor(max_workers=10) as executor:
         # 并行拉取所有论文的参考文献列表（保持与papers相同的顺序）
         all_refs = list(executor.map(lambda p: _fetch_references(p.arxiv_id),
                                      papers))
