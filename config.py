@@ -18,17 +18,23 @@ import os
 # ---------------------------------------------------------------
 # 一、LLM API 配置
 # ---------------------------------------------------------------
+def _clean(value: str) -> str:
+    """清理粘贴配置时常见的空格、换行和包裹引号。
+    Secrets/.env 里多一个空格或引号，服务商就会判定密钥无效（401）。"""
+    return (value or "").strip().strip('"').strip("'").strip()
+
+
 # API 密钥：优先从环境变量读取，读不到再从 .env 文件读取
-API_KEY = os.environ.get("LLM_API_KEY", "")
+API_KEY = _clean(os.environ.get("LLM_API_KEY", ""))
 
 # API 地址（兼容 OpenAI 格式的服务都可用）。
 # 留空 = 按密钥自动识别厂商，无需手填：
 #   DeepSeek: https://api.deepseek.com
 #   智谱GLM:  https://open.bigmodel.cn/api/paas/v4
-BASE_URL = os.environ.get("LLM_BASE_URL", "")
+BASE_URL = _clean(os.environ.get("LLM_BASE_URL", ""))
 
 # 默认模型名。留空 = 按服务商自动选（DeepSeek=deepseek-chat, GLM=glm-4-flash）
-MODEL_NAME = os.environ.get("LLM_MODEL", "")
+MODEL_NAME = _clean(os.environ.get("LLM_MODEL", ""))
 
 # 各服务商的默认参数（自动识别时使用）
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
@@ -126,14 +132,14 @@ if os.path.exists(_env_file):
                 key, value = line.split("=", 1)
                 key, value = key.strip(), value.strip()
                 if key == "LLM_API_KEY":
-                    API_KEY = API_KEY or value
+                    API_KEY = API_KEY or _clean(value)
                 elif key == "LLM_BASE_URL":
                     # 环境变量显式设置 > .env > 内置默认
                     if "LLM_BASE_URL" not in os.environ:
-                        BASE_URL = value
+                        BASE_URL = _clean(value)
                 elif key == "LLM_MODEL":
                     if "LLM_MODEL" not in os.environ:
-                        MODEL_NAME = value
+                        MODEL_NAME = _clean(value)
                 elif key == "S2_API_KEY":
                     S2_API_KEY = S2_API_KEY or value
                 elif key == "APP_PASSWORD":
