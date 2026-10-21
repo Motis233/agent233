@@ -21,15 +21,27 @@ import os
 # API 密钥：优先从环境变量读取，读不到再从 .env 文件读取
 API_KEY = os.environ.get("LLM_API_KEY", "")
 
-# API 地址（兼容 OpenAI 格式的服务都可用）：
-#   DeepSeek: https://api.deepseek.com         （便宜，推荐开发调试）
+# API 地址（兼容 OpenAI 格式的服务都可用）。
+# 留空 = 按密钥自动识别厂商，无需手填：
+#   DeepSeek: https://api.deepseek.com
 #   智谱GLM:  https://open.bigmodel.cn/api/paas/v4
-BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
+BASE_URL = os.environ.get("LLM_BASE_URL", "")
 
-# 默认模型名
-#   DeepSeek: deepseek-chat
-#   智谱GLM:  glm-4-flash（有免费额度，适合开发）
-MODEL_NAME = os.environ.get("LLM_MODEL", "deepseek-chat")
+# 默认模型名。留空 = 按服务商自动选（DeepSeek=deepseek-chat, GLM=glm-4-flash）
+MODEL_NAME = os.environ.get("LLM_MODEL", "")
+
+# 各服务商的默认参数（自动识别时使用）
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
+GLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+GLM_DEFAULT_MODEL = "glm-4-flash"
+
+
+def _looks_like_glm_key(key: str) -> bool:
+    """智谱GLM密钥形如 '32位id.16位secret'（含一个点，不以sk-开头）；
+    DeepSeek密钥则固定以 sk- 开头。"""
+    return bool(key) and not key.startswith("sk-") and "." in key
+
 
 # ---------------------------------------------------------------
 # 一之二、Semantic Scholar API 密钥（检索Agent用）
@@ -126,3 +138,23 @@ if os.path.exists(_env_file):
                     S2_API_KEY = S2_API_KEY or value
                 elif key == "APP_PASSWORD":
                     APP_PASSWORD = APP_PASSWORD or value
+
+# ---------------------------------------------------------------
+# 五、按密钥自动识别服务商（.env 加载完之后再判断）
+# ---------------------------------------------------------------
+# 场景: 用户只换了密钥（例如换成智谱GLM），但 .env / Secrets 里的
+# LLM_BASE_URL 和 LLM_MODEL 还是 DeepSeek 的默认值 → 请求必然401。
+# 这里以密钥形态为准，自动纠正地址与模型名；显式配置的自定义代理
+# 地址（不含 deepseek 字样）不会被覆盖。
+_is_glm = _looks_like_glm_key(API_KEY)
+if _is_glm:
+    if not BASE_URL or "deepseek" in BASE_URL.lower():
+        BASE_URL = GLM_BASE_URL
+    if not MODEL_NAME or MODEL_NAME.startswith("deepseek"):
+        MODEL_NAME = GLM_DEFAULT_MODEL
+
+if not BASE_URL:
+    BASE_URL = DEEPSEEK_BASE_URL
+if not MODEL_NAME:
+    MODEL_NAME = DEEPSEEK_DEFAULT_MODEL
+
