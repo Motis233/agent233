@@ -58,6 +58,7 @@ def _secret(key: str, default: str = "") -> str:
 
 
 _keys_to_sync = ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL",
+                 "LLM_API_KEY_2", "LLM_BASE_URL_2", "LLM_MODEL_2",
                  "S2_API_KEY", "APP_PASSWORD"]
 for _k in _keys_to_sync:
     if _k not in os.environ:
