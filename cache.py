@@ -44,7 +44,7 @@ TTL_SECONDS = 7 * 86400  # 缓存有效期：7天（论文元数据变化极慢�
 # 比HTTP缓存的7天更长，因为重新调用LLM的代价（钱+30秒等待）远高于元数据请求
 LLM_TTL_SECONDS = 30 * 86400
 
-_LOCK = threading.Lock()   # 保护连接的写操作（多线程并发安全）
+_LOCK = threading.RLock()  # 保护同一个 sqlite 连接的所有操作（读也必须加锁）
 _INIT_LOCK = threading.Lock()  # 保护首次初始化（防止并发建连接竞态）
 _CONN: sqlite3.Connection | None = None  # 惰性初始化的连接
 
@@ -118,21 +118,25 @@ def get(key: str) -> dict | None:
     """
     conn = _init()
     t0 = time.perf_counter()
-    row = conn.execute(
-        "SELECT ts, payload FROM cache WHERE key=?", (key,)).fetchone()
-    if row is not None:
-        if time.time() - row[0] < TTL_SECONDS:
-            _log(key, "cache", (time.perf_counter() - t0) * 1000,
-                 "ok", from_cache=1)
-            return json.loads(row[1])
-        else:
-            # 已过期: 删除过期行，视同未命中
-            with _LOCK:
-                conn.execute("DELETE FROM cache WHERE key=?", (key,))
-                conn.commit()
-            _log(key, "cache", (time.perf_counter() - t0) * 1000,
-                 "expired", from_cache=0)
-            return None
+    # 2026-11-04修复: 同一个 sqlite 连接禁止多线程并发使用，
+    # 读操作也必须持锁（此前 SELECT 不持锁，与 put/_log 的写入并发时
+    # 抛 sqlite3.InterfaceError: bad parameter or other API misuse，
+    # 图谱引用拉取的 6 线程场景必现）。RLock 允许 _log 在同一线程重入。
+    with _LOCK:
+        row = conn.execute(
+            "SELECT ts, payload FROM cache WHERE key=?", (key,)).fetchone()
+        expired = row is not None and time.time() - row[0] >= TTL_SECONDS
+        if expired:
+            conn.execute("DELETE FROM cache WHERE key=?", (key,))
+            conn.commit()
+    if row is not None and not expired:
+        _log(key, "cache", (time.perf_counter() - t0) * 1000,
+             "ok", from_cache=1)
+        return json.loads(row[1])
+    if expired:
+        _log(key, "cache", (time.perf_counter() - t0) * 1000,
+             "expired", from_cache=0)
+        return None
     _log(key, "cache", (time.perf_counter() - t0) * 1000,
          "miss", from_cache=0)
     return None
@@ -166,20 +170,22 @@ def get_llm(key: str) -> str | None:
     """
     conn = _init()
     t0 = time.perf_counter()
-    row = conn.execute(
-        "SELECT ts, payload FROM llm_cache WHERE key=?", (key,)).fetchone()
-    if row is not None:
-        if time.time() - row[0] < LLM_TTL_SECONDS:
-            _log(key, "llm", (time.perf_counter() - t0) * 1000,
-                 "ok", from_cache=1)
-            return row[1]
-        else:
-            with _LOCK:
-                conn.execute("DELETE FROM llm_cache WHERE key=?", (key,))
-                conn.commit()
-            _log(key, "llm", (time.perf_counter() - t0) * 1000,
-                 "expired", from_cache=0)
-            return None
+    # 同 get()：读也持锁，避免与其它线程的写入并发使用同一连接
+    with _LOCK:
+        row = conn.execute(
+            "SELECT ts, payload FROM llm_cache WHERE key=?", (key,)).fetchone()
+        expired = row is not None and time.time() - row[0] >= LLM_TTL_SECONDS
+        if expired:
+            conn.execute("DELETE FROM llm_cache WHERE key=?", (key,))
+            conn.commit()
+    if row is not None and not expired:
+        _log(key, "llm", (time.perf_counter() - t0) * 1000,
+             "ok", from_cache=1)
+        return row[1]
+    if expired:
+        _log(key, "llm", (time.perf_counter() - t0) * 1000,
+             "expired", from_cache=0)
+        return None
     _log(key, "llm", (time.perf_counter() - t0) * 1000, "miss", from_cache=0)
     return None
 
@@ -240,7 +246,8 @@ def diag_summary(days: int = 7) -> str:
     """
     conn = _init()
     cutoff = time.time() - days * 86400
-    rows = conn.execute("""
+    with _LOCK:
+        rows = conn.execute("""
         SELECT source,
                COUNT(*)                          AS total,
                ROUND(AVG(ms), 0)                 AS avg_ms,
@@ -267,8 +274,9 @@ def diag_summary(days: int = 7) -> str:
 def stats() -> tuple[int, int]:
     """(缓存条数, 日志条数) —— 简单计数，调试用"""
     conn = _init()
-    n_cache = conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
-    n_log = conn.execute("SELECT COUNT(*) FROM req_log").fetchone()[0]
+    with _LOCK:
+        n_cache = conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
+        n_log = conn.execute("SELECT COUNT(*) FROM req_log").fetchone()[0]
     return n_cache, n_log
 
 
