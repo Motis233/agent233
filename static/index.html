@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文献综述 Agent</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<style>
+:root {
+  --bg: #f6f8fb; --card: #ffffff; --ink: #0f172a; --slate: #475569;
+  --muted: #94a3b8; --border: #e2e8f0; --brand: #4f46e5; --brand-lt: #eef2ff;
+  --red: #b91c1c; --red-lt: #fee2e2; --amber: #b45309; --amber-lt: #fef3c7;
+  --green: #047857; --green-lt: #d1fae5;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+       background: var(--bg); color: var(--ink); font-size: 14px; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 16px; }
+header { display: flex; align-items: center; gap: 12px; padding: 8px 0 14px; }
+header h1 { font-size: 18px; }
+header .sub { color: var(--muted); font-size: 12px; }
+.badge { font-size: 12px; padding: 2px 10px; border-radius: 999px; }
+.badge.running { background: var(--amber-lt); color: var(--amber); }
+.badge.done { background: var(--green-lt); color: var(--green); }
+.badge.error, .badge.cancelled { background: var(--red-lt); color: var(--red); }
+
+.layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--border);
+        border-radius: 12px; padding: 14px; }
+
+/* 左栏：表单 + 任务列表 */
+#topic { width: 100%; height: 64px; padding: 8px; border: 1px solid var(--border);
+         border-radius: 8px; resize: vertical; font: inherit; }
+.form-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.form-row label { font-size: 12px; color: var(--slate); display: block; margin-bottom: 3px; }
+select, input[type=number] { padding: 6px 8px; border: 1px solid var(--border);
+         border-radius: 8px; font: inherit; background: #fff; }
+button { padding: 8px 14px; border: none; border-radius: 8px; cursor: pointer;
+         font: inherit; font-weight: 600; }
+#btn-run { background: var(--brand); color: #fff; width: 100%; margin-top: 10px; }
+#btn-run:disabled { opacity: .5; cursor: not-allowed; }
+#btn-cancel { background: var(--red-lt); color: var(--red); margin-left: auto; }
+.task-item { padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
+             margin-top: 8px; cursor: pointer; }
+.task-item:hover, .task-item.active { border-color: var(--brand); background: var(--brand-lt); }
+.task-item .t { font-size: 13px; font-weight: 600; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }
+.task-item .m { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* 右栏：进度 + 结果 */
+#stage-bar { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.stage-chip { font-size: 12px; padding: 4px 12px; border-radius: 999px;
+              background: var(--bg); border: 1px solid var(--border); color: var(--muted); }
+.stage-chip.on { background: var(--brand-lt); border-color: var(--brand);
+                 color: var(--brand); font-weight: 700; }
+.stage-chip.done-chip { color: var(--green); border-color: var(--green); }
+#logs { height: 220px; overflow-y: auto; background: #0b1220; color: #93a4c4;
+        border-radius: 8px; padding: 10px; font-family: Consolas, monospace;
+        font-size: 12px; line-height: 1.7; }
+#logs .st { color: #c7d2fe; font-weight: 700; }
+.tabs { display: flex; gap: 4px; margin-top: 14px; border-bottom: 1px solid var(--border); }
+.tabs button { background: none; border: none; padding: 8px 14px; color: var(--slate);
+               border-bottom: 2px solid transparent; border-radius: 0; font-weight: 500; }
+.tabs button.on { color: var(--brand); border-bottom-color: var(--brand); font-weight: 700; }
+.tab-body { padding-top: 12px; max-height: 520px; overflow-y: auto; }
+.md { line-height: 1.8; }
+.md h1, .md h2 { border-bottom: 1px solid var(--border); padding-bottom: 6px; margin: 14px 0 8px; }
+.md h3 { margin: 12px 0 6px; }
+.md p, .md li { margin: 4px 0; }
+.md table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.md th, .md td { border: 1px solid var(--border); padding: 6px 8px; font-size: 13px; }
+.md th { background: var(--brand-lt); }
+.md blockquote { border-left: 3px solid var(--brand); padding-left: 10px;
+                 color: var(--slate); background: var(--brand-lt); }
+.conflict { border: 1px solid var(--border); border-left: 4px solid var(--amber);
+            border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.conflict.contradict { border-left-color: var(--red); }
+.conflict .who { font-size: 12px; color: var(--muted); }
+.empty { color: var(--muted); text-align: center; padding: 40px 0; }
+iframe { width: 100%; height: 520px; border: 1px solid var(--border); border-radius: 8px; }
+.hidden { display: none !important; }
+#toast { position: fixed; top: 16px; right: 16px; background: var(--red); color: #fff;
+         padding: 10px 16px; border-radius: 8px; font-size: 13px; z-index: 99; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>📚 文献综述 Agent</h1>
+    <span class="sub">多Agent流水线 · 两级幻觉核验 · 证据链穿透</span>
+    <span id="hdr-badge" class="badge hidden"></span>
+  </header>
+
+  <div class="layout">
+    <!-- 左栏 -->
+    <div>
+      <div class="card">
+        <textarea id="topic" placeholder="输入研究主题，例如：脉冲神经网络的训练方法"></textarea>
+        <div class="form-row">
+          <div style="flex:1">
+            <label>检索模式</label>
+            <select id="mode" style="width:100%">
+              <option value="standard">标准检索</option>
+              <option value="mode1">模式1</option>
+              <option value="mode2">模式2</option>
+              <option value="mode3">模式3</option>
+            </select>
+          </div>
+          <div style="width:80px">
+            <label>年限</label>
+            <input id="years" type="number" value="2" min="1" max="10" style="width:100%">
+          </div>
+          <div style="width:80px">
+            <label>篇数</label>
+            <input id="top_k" type="number" value="6" min="3" max="20" style="width:100%">
+          </div>
+        </div>
+        <div class="form-row">
+          <label><input type="checkbox" id="fast"> 快速模式（跳过引用链与矛盾检测，约3分钟）</label>
+        </div>
+        <button id="btn-run">开始综述</button>
+        <div id="btn-cancel-wrap" class="hidden" style="display:flex;margin-top:8px">
+          <button id="btn-cancel">终止当前任务</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
+        <b style="font-size:13px">任务历史</b>
+        <div id="task-list"><div class="empty" style="padding:16px">暂无任务</div></div>
+      </div>
+    </div>
+
+    <!-- 右栏 -->
+    <div class="card" id="right">
+      <div id="placeholder" class="empty">左侧输入主题并点击「开始综述」<br>
+        <span style="font-size:12px">页面随时可刷新/关闭，任务在服务器后台继续运行</span></div>
+
+      <!-- 进度面板 -->
+      <div id="progress-panel" class="hidden">
+        <div style="display:flex;align-items:center;gap:8px">
+          <b id="run-topic"></b>
+          <span id="run-badge" class="badge">运行中</span>
+        </div>
+        <div id="stage-bar"></div>
+        <div id="logs"></div>
+      </div>
+
+      <!-- 结果面板 -->
+      <div id="result-panel" class="hidden">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <b id="res-topic"></b>
+          <span id="res-badge" class="badge"></span>
+          <span id="res-hallu" class="badge hidden"></span>
+        </div>
+        <div class="tabs">
+          <button data-tab="report" class="on">综述报告</button>
+          <button data-tab="papers">论文列表</button>
+          <button data-tab="conflicts">矛盾与张力</button>
+          <button data-tab="review">核验明细</button>
+          <button data-tab="graph">引用图谱</button>
+        </div>
+        <div class="tab-body" id="tab-report"><div class="md"></div></div>
+        <div class="tab-body hidden" id="tab-papers"></div>
+        <div class="tab-body hidden" id="tab-conflicts"></div>
+        <div class="tab-body hidden" id="tab-review"></div>
+        <div class="tab-body hidden" id="tab-graph"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const STAGES = ["规划", "检索", "提取", "审查", "综合", "矛盾检测", "证据定位"];
+const $ = s => document.querySelector(s);
+let pw = localStorage.getItem("pw") || "";
+let curTask = null, es = null, seenLogs = 0;
+
+function toast(msg) {
+  const t = document.createElement("div");
+  t.id = "toast"; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({"X-App-Password": pw}, opts.headers || {});
+  const r = await fetch(path, opts);
+  if (r.status === 401) {
+    const v = prompt("请输入访问密码");
+    if (v !== null) { pw = v; localStorage.setItem("pw", v); return api(path, opts); }
+    throw new Error("需要访问密码");
+  }
+  if (!r.ok) {
+    let msg = r.status;
+    try { msg = (await r.json()).detail || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+async function ensureAuth() {
+  try {
+    const h = await fetch("/api/health").then(r => r.json());
+    if (!h.app_password) return true;
+    await api("/api/tasks");
+    return true;
+  } catch (e) { return false; }
+}
+
+async function refreshTasks(selectId) {
+  const tasks = await api("/api/tasks");
+  const box = $("#task-list");
+  box.innerHTML = "";
+  if (!tasks.length) box.innerHTML = '<div class="empty" style="padding:16px">暂无任务</div>';
+  tasks.forEach(t => {
+    const d = document.createElement("div");
+    d.className = "task-item" + (t.id === selectId ? " active" : "");
+    d.innerHTML = `<div class="t">${esc(t.topic)}</div>
+      <div class="m"><span class="badge ${t.state}">${stateText(t.state)}</span>
+      ${t.mode}${t.fast ? "·快速" : ""} · ${t.submitted_at || ""}</div>`;
+    d.onclick = () => selectTask(t.id);
+    box.appendChild(d);
+  });
+  return tasks;
+}
+function esc(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+function stateText(s) { return {running: "运行中", done: "完成", error: "失败", cancelled: "已终止", gone: "已失效"}[s] || s; }
+
+/* ---------------- 提交 ---------------- */
+$("#btn-run").onclick = async () => {
+  const topic = $("#topic").value.trim();
+  if (!topic) return toast("请输入研究主题");
+  $("#btn-run").disabled = true;
+  try {
+    const r = await api("/api/run", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        topic, mode: $("#mode").value, fast: $("#fast").checked,
+        years: +$("#years").value, top_k: +$("#top_k").value
+      })
+    });
+    seenLogs = 0;
+    await refreshTasks(r.id);
+    selectTask(r.id);
+  } catch (e) { toast(e.message); }
+  $("#btn-run").disabled = false;
+};
+
+/* ---------------- 选中任务 ---------------- */
+function selectTask(id) {
+  curTask = id;
+  if (es) { es.close(); es = null; }
+  stopLive();
+  api("/api/tasks/" + id).then(t => {
+    if (t.state === "running") startLive(id, t);
+    else showResult(id, t);
+    refreshTasks(id);
+  }).catch(e => toast(e.message));
+}
+
+function stopLive() {
+  $("#progress-panel").classList.add("hidden");
+  $("#result-panel").classList.add("hidden");
+  $("#btn-cancel-wrap").classList.add("hidden");
+  $("#logs").innerHTML = "";
+  $("#stage-bar").innerHTML = "";
+  $("#hdr-badge").classList.add("hidden");
+}
+
+function startLive(id, t) {
+  $("#placeholder").classList.add("hidden");
+  $("#progress-panel").classList.remove("hidden");
+  $("#result-panel").classList.add("hidden");
+  $("#btn-cancel-wrap").classList.remove("hidden");
+  $("#run-topic").textContent = t.topic;
+  $("#run-badge").className = "badge running";
+  renderStages("");
+  connectSSE(id);
+}
+
+function renderStages(curStage) {
+  const bar = $("#stage-bar");
+  const curIdx = STAGES.indexOf(curStage);
+  bar.innerHTML = "";
+  STAGES.forEach((s, i) => {
+    const c = document.createElement("span");
+    c.className = "stage-chip" + (s === curStage ? " on" :
+                   (curIdx > i ? " done-chip" : ""));
+    c.textContent = s;
+    bar.appendChild(c);
+  });
+}
+
+function connectSSE(id) {
+  const url = "/api/tasks/" + id + "/stream" + (pw ? "?pw=" + encodeURIComponent(pw) : "");
+  es = new EventSource(url);
+  es.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    if (d.type === "log") {
+      const box = $("#logs");
+      const line = document.createElement("div");
+      if (d.stage) line.innerHTML = `<span class="st">[${d.stage}]</span> `;
+      line.appendChild(document.createTextNode(`${d.t || ""} ${d.msg || ""}`));
+      box.appendChild(line);
+      box.scrollTop = box.scrollHeight;
+      if (d.stage && STAGES.includes(d.stage)) renderStages(d.stage);
+    } else if (d.type === "state" && d.state === "running" && d.stage) {
+      renderStages(d.stage);
+    } else if (d.type === "end") {
+      es.close(); es = null;
+      selectTask(id);          // 终态：刷新并展示结果
+    }
+  };
+  es.onerror = () => { /* 断线由浏览器自动重连 */ };
+}
+
+$("#btn-cancel").onclick = async () => {
+  if (!curTask) return;
+  try {
+    const r = await api(`/api/tasks/${curTask}/cancel`, {method: "POST"});
+    toast(r.msg);
+  } catch (e) { toast(e.message); }
+};
+
+/* ---------------- 结果展示 ---------------- */
+async function showResult(id, t) {
+  $("#placeholder").classList.add("hidden");
+  $("#progress-panel").classList.add("hidden");
+  const p = $("#result-panel");
+  p.classList.remove("hidden");
+  $("#res-topic").textContent = t.topic;
+  $("#res-badge").className = "badge " + t.state;
+  $("#res-badge").textContent = stateText(t.state);
+  const hb = $("#res-hallu");
+  if (t.hallucination_rate != null) {
+    hb.classList.remove("hidden");
+    hb.className = "badge " + (t.hallucination_rate <= 0.12 ? "done" : "error");
+    hb.textContent = "幻觉率 " + (t.hallucination_rate * 100).toFixed(1) + "%";
+  } else hb.classList.add("hidden");
+
+  let r = {};
+  try { r = await api(`/api/tasks/${id}/result`); } catch (e) { /* 无产物 */ }
+
+  // 报告
+  $("#tab-report").innerHTML =
+    r.report ? `<div class="md">${marked.parse(r.report)}</div>`
+             : `<div class="empty">没有报告（任务${stateText(t.state)}）</div>`;
+  // 论文
+  const papers = r.papers || [];
+  $("#tab-papers").innerHTML = papers.length ? `<table><tr>
+      <th>#</th><th>标题</th><th>年份</th><th>被引</th><th>PDF</th></tr>` +
+      papers.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(p.title)}</td>
+        <td>${p.year || "-"}</td><td>${p.cited_by ?? "-"}</td>
+        <td>${p.arxiv_id ? `<a href="/api/pdf/${p.arxiv_id}" target="_blank">打开</a>` : "-"}</td></tr>`).join("") +
+      "</table>" : `<div class="empty">无论文数据</div>`;
+  // 矛盾
+  const conflicts = r.conflicts || [];
+  $("#tab-conflicts").innerHTML = conflicts.length ? conflicts.map(c =>
+    `<div class="conflict ${c.relation}">
+      <b>${c.relation === "contradict" ? "⚡ 直接矛盾" : "张力"}</b>
+      <div style="margin:4px 0">${esc(c.summary || c.msg || JSON.stringify(c).slice(0, 200))}</div>
+      <div class="who">${esc((c.a_paper || "") + " ↔ " + (c.b_paper || ""))}</div>
+    </div>`).join("") : `<div class="empty">未发现矛盾/张力（或该任务未运行矛盾检测）</div>`;
+  // 核验
+  const rev = r.review || {};
+  const results = rev.results || rev || [];
+  const rows = Array.isArray(results) ? results.slice(0, 100) : [];
+  $("#tab-review").innerHTML = r.review_table ?
+    `<div class="md">${marked.parse(r.review_table)}</div>` :
+    (rows.length ? `<pre style="font-size:12px;white-space:pre-wrap">${esc(JSON.stringify(rows, null, 1).slice(0, 8000))}</pre>`
+                 : `<div class="empty">无核验明细</div>`);
+  // 图谱
+  $("#tab-graph").innerHTML =
+    `<iframe src="/api/tasks/${id}/graph${pw ? "?pw=" + encodeURIComponent(pw) : ""}"></iframe>`;
+}
+
+/* tabs 切换 */
+document.querySelectorAll(".tabs button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach(x => x.classList.remove("on"));
+    document.querySelectorAll(".tab-body").forEach(x => x.classList.add("hidden"));
+    b.classList.add("on");
+    $("#tab-" + b.dataset.tab).classList.remove("hidden");
+  };
+});
+
+/* ---------------- 启动 ---------------- */
+(async () => {
+  const ok = await ensureAuth();
+  if (!ok) { pw = prompt("请输入访问密码") || ""; localStorage.setItem("pw", pw); }
+  try {
+    const tasks = await refreshTasks();
+    const running = tasks.find(t => t.state === "running");
+    if (running) selectTask(running.id);
+    else if (tasks.length) selectTask(tasks[0].id);
+  } catch (e) { toast(e.message); }
+  // 轮询刷新左侧列表（捕获其他入口产生的状态变化）
+  setInterval(() => refreshTasks(curTask).catch(() => {}), 10000);
+})();
+</script>
+</body>
+</html>
