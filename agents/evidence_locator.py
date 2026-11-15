@@ -181,13 +181,16 @@ def render_evidence_page(pdf_path: str, page_num: int,
     """
     渲染指定页并高亮匹配文本
 
-    高亮实现（词矩形精确对齐, 修复错误高亮别处单词的问题）:
-      旧方案用page.search_for()搜首尾锚点词组——锚点跨行搜不到时退化为
-      逐词搜索, 导致"the/we/of"等高频词在整页的所有出现全被高亮;
-      且search_for返回词组的全部出现位置, 重复术语会多处误亮。
-      新方案: 用get_text("words")拿到每个词的矩形, 在词序列中精确
-      定位matched_text对应的连续词段, 只高亮这段的矩形——
-      高亮的必然就是locate_quote匹配到的那段原文, 物理上杜绝错位。
+    高亮实现（三级降级, 词矩形精确对齐优先, 融合cbc分支与
+    review-agent-benchmark分支两版方案）:
+      L1 精确词段对齐: _page_word_rects构建词流(含连字符断词合并
+         perfor-⏎mance->performance, 矩形并集), _find_word_span定位
+         matched_text对应的连续词段——高亮的必然就是locate_quote
+         匹配到的那段原文, 物理上杜绝错位/误亮别处单词
+      L2 模糊滑窗对齐: matched_text与词流有细微差异(OCR噪声等)
+         导致L1失败时, 滑窗取匹配率>=0.6的最佳窗口, 只取命中词bbox
+      L3 search_for滑窗+全词兜底: 虚词过滤/多现词放弃, 最后防线
+      全部失败返回False(前端显示"无法定位", 绝不误亮)
 
     返回:
         True=渲染成功; False=词对齐失败(前端显示"无法定位", 绝不误亮)
@@ -195,34 +198,30 @@ def render_evidence_page(pdf_path: str, page_num: int,
     try:
         doc = fitz.open(pdf_path)
         page = doc[page_num]
-
-        page_words = _page_word_rects(page)
         target_words = matched_text.split()
-        span = _find_word_span(page_words, target_words)
-        if span is None:
-            print(f"[证据定位] 词对齐失败 p{page_num}: "
-                  f"{matched_text[:40]}...")
+        if not target_words:
             doc.close()
             return False
-        s, e = span
 
-        # 同行且水平间隙小的相邻词矩形合并为一条高亮带（美观+少注释）
-        rects: list = []
-        cur = None
-        for i in range(s, e):
-            r = page_words[i][1]
-            if (cur is not None and abs(cur.y0 - r.y0) < 2
-                    and abs(cur.y1 - r.y1) < 2
-                    and 0 <= r.x0 - cur.x1 <= 25):
-                cur |= r  # 同行相邻词并集（双栏同行左右间距大, 不会误合）
-            else:
-                if cur is not None:
-                    rects.append(cur)
-                cur = fitz.Rect(r)
-        if cur is not None:
-            rects.append(cur)
+        page_words = _page_word_rects(page)
+        span = _find_word_span(page_words, target_words)
+        if span is not None:
+            s, e = span
+            rects = [page_words[i][1] for i in range(s, e)]
+        else:
+            # L2/L3: matched_text与词流有差异时的容错路径
+            rects = _rects_by_word_alignment(page, target_words, page_words)
+            if not rects:
+                rects = _rects_by_search_window(page, target_words)
+            if not rects:
+                print(f"[证据定位] 词对齐失败 p{page_num}: "
+                      f"{matched_text[:40]}...")
+                doc.close()
+                return False
 
-        for rect in rects:
+        # 同行且水平间隙小的相邻矩形合并为一条高亮带（美观+少注释;
+        # 双栏同行左右间距大, 不会误合）
+        for rect in _merge_line_rects(rects):
             page.add_highlight_annot(rect)
 
         # 渲染为图片（2倍缩放保证文字清晰）
@@ -234,6 +233,164 @@ def render_evidence_page(pdf_path: str, page_num: int,
     except Exception as e:
         print(f"[证据定位] 渲染失败 {pdf_path} p{page_num}: {e}")
         return False
+
+
+def _merge_line_rects(rects: list) -> list:
+    """同行(y差<2)且水平间隙<=25pt的相邻矩形合并为高亮带
+
+    按阅读顺序(y,x)排序后线性合并; 合并基于矩形几何位置,
+    与矩形来源(L1词段/L2模糊对齐/L3兜底)无关。
+    """
+    rs = sorted(rects, key=lambda r: (round(r.y0, 1), r.x0))
+    out: list = []
+    cur = None
+    for r in rs:
+        if (cur is not None and abs(cur.y0 - r.y0) < 2
+                and abs(cur.y1 - r.y1) < 2
+                and 0 <= r.x0 - cur.x1 <= 25):
+            cur |= r
+        else:
+            if cur is not None:
+                out.append(cur)
+            cur = fitz.Rect(r)
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def _norm_word(w: str) -> str:
+    """词级归一化: 剥标点+小写(标点会干扰词匹配)"""
+    return w.strip(".,;:!?()[]\"'`").lower()
+
+
+# 逐词兜底时跳过的虚词: 孤立搜索这些词毫无定位价值,
+# 只会在全页产生大量无关高亮
+_STOP_WORDS = frozenset("""
+a an the of to in on for with and or is are was were be been being
+we our us it its this that these those as at by from not no but if
+then than so such can could may might will would should must have
+has had do does did over under between within into onto about above
+below out up down off
+""".split())
+
+
+def _rects_by_word_alignment(page, words: list[str],
+                             page_words: list | None = None) -> list:
+    """L2: 词序列滑窗模糊对齐, 取匹配率最高窗口的命中词bbox
+
+    matched_text与词流存在细微差异(OCR噪声/断词合并遗漏等)导致
+    L1精确对齐失败时, 按60%匹配率兜底。相比search_for滑窗:
+      - 斜体/特殊字体词不再搜索失败(实测部分斜体词search_for
+        返回0矩形, 导致高亮缺口)
+      - 短词不再子串误命中(search_for("art")会命中"artificial",
+        词序列对齐受上下文约束不会)
+      - 每个命中词的bbox天然相邻, 整段高亮无缺口
+
+    page_words: 预构建词流[(规范化词, 矩形)](来自_page_word_rects,
+    含断词合并); None时自建简易词流。
+    """
+    if not words:
+        return []
+    q_words = [_norm_word(w) for w in words]  # 与words一一对应, 空串占位
+    n = len(q_words)
+
+    if page_words is None:
+        raw = page.get_text("words")
+        page_words = [(_norm_for_match(t[4]), fitz.Rect(t[:4])) for t in raw]
+    p_words = [_norm_word(w) for w, _ in page_words]
+    if len(p_words) < n:
+        return []
+
+    # 滑窗找匹配率最高的起点
+    best_s, best_m = -1, 0
+    for s in range(0, len(p_words) - n + 1):
+        m = sum(1 for i in range(n)
+                if q_words[i] and p_words[s + i] == q_words[i])
+        if m > best_m:
+            best_m, best_s = m, s
+    if best_s < 0 or best_m < max(2, int(n * 0.6)):
+        return []  # 匹配率过低视为未命中, 交由备用方案
+
+    # 只取匹配成功词的bbox(失配词位置不可靠, 丢弃避免错位高亮)
+    return [page_words[best_s + i][1] for i in range(n)
+            if q_words[i] and p_words[best_s + i] == q_words[i]]
+
+
+def _rects_by_search_window(page, words: list[str]) -> list:
+    """备用方案: search_for滑窗分块搜索(处理词级对齐失败的情况)"""
+    if not words:
+        return []
+
+    rects: list = []
+
+    def _add_batch(found):
+        for r in found:
+            # 近似去重: 重叠滑窗块会产生同一词的细微差异矩形
+            # (y相差约1pt), 精确相等去重无法消除
+            if not any(abs(r.y0 - o.y0) < 2 and abs(r.x0 - o.x0) < 2
+                       for o in rects):
+                rects.append(r)
+
+    def _add_word_by_word(chunk_words, y_min=None, y_max=None):
+        """逐词兜底: 在页面词流中做全词精确匹配
+
+        不用search_for逐词搜: 它是子串匹配, "rot"会命中"rotate"的
+        前3字符, "of"会命中"profile"——产生无意义高亮。
+        改为页面词流全词相等比较:
+          - 虚词(of/the/an...)与过短词直接跳过
+          - y_min/y_max约束时只收集锚矩形附近的命中(避免同词
+            在页面其他位置的高亮混入)
+          - 无锚定时, 页面出现>=4次的词区分度太低, 直接放弃
+            (满页开花比高亮缺口更糟)
+        """
+        wanted = {_norm_word(w) for w in chunk_words}
+        pw = page.get_text("words")
+        p_norm = [_norm_word(t[4]) for t in pw]
+        freq = {}
+        for w in p_norm:
+            freq[w] = freq.get(w, 0) + 1
+        for t, w in zip(pw, p_norm):
+            if len(w) < 2 or w in _STOP_WORDS or w not in wanted:
+                continue
+            if y_min is not None:
+                if t[3] < y_min or t[1] > y_max:
+                    continue
+            elif freq[w] >= 4:
+                continue
+            r = fitz.Rect(t[:4])
+            if not any(r == o for o in rects):
+                rects.append(r)
+
+    if len(words) <= 8:
+        # 短文本: 词流全词匹配优先(无子串误命中, 虚词被过滤),
+        # 未命中再整句search_for(处理断行连字符拆词等词流失效场景)
+        _add_word_by_word(words)
+        if not rects:
+            _add_batch(page.search_for(" ".join(words)))
+        return rects
+
+    # 长文本: 滑窗分块
+    chunk, step = 6, 3
+    starts = list(range(0, len(words) - chunk + 1, step))
+    if starts[-1] != len(words) - chunk:
+        starts.append(len(words) - chunk)  # 末尾块对齐文末
+
+    for s in starts:
+        phrase = " ".join(words[s:s + chunk])
+        found = page.search_for(phrase)
+        if found:
+            _add_batch(found)
+        elif s == 0 or s == starts[-1]:
+            # 首块/末块失败: 逐词兜底(避免整段开头/结尾丢失)。
+            # 末块兜底时已有锚矩形, 限定在其附近±20pt(约一行)收集,
+            # 防止具体词(如state)在页面其他出现处被误高亮
+            if rects:
+                ys0 = min(r.y0 for r in rects)
+                ys1 = max(r.y1 for r in rects)
+                _add_word_by_word(words[s:s + chunk], ys0 - 20, ys1 + 20)
+            else:
+                _add_word_by_word(words[s:s + chunk])
+    return rects
 
 
 # ---------------------------------------------------------------
