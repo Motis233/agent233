@@ -209,39 +209,6 @@ def run_pipeline(topic: str, top_k: int, mode: str, years: int,
         log(f"提取Agent完成: {len(cards)}张卡片, "
             f"{sum(len(c.claims) for c in cards)}条声明", stage="提取")
 
-        # ---- 4. 审查Agent ----
-        check_cancel()
-        log("审查Agent: 两级核验中（程序对齐+语义审查）...", stage="审查")
-        results = reviewer.run(papers, cards)
-        report = reviewer.generate_report(results)
-        log(f"审查Agent完成: 幻觉率 {report.hallucination_rate:.1%}", stage="审查")
-
-        # ---- 5+7. 综合与矛盾检测（并行, 2026-10-16优化4）----
-        # 两者都只依赖审查产物(paper_cards/review_results), 互不读取
-        # 对方输出(已核实synthesizer不读conflicts.json)——原先串行
-        # 纯属浪费, 深度档省30-60秒。快速模式仍跳过矛盾检测
-        check_cancel()
-        if fast:
-            log("综合Agent: 生成综述报告与引用图谱...", stage="综合")
-            synthesizer.run(topic)
-            log("综合Agent完成: 报告+表格+图谱已生成", stage="综合")
-            log("⚡快速模式: 跳过矛盾检测", stage="矛盾检测")
-            # 落盘空结果, 避免上一主题的conflicts.json残留误导下游展示
-            save_json(os.path.join(config.DATA_DIR, "conflicts.json"), [])
-        else:
-            from agents import conflict_detector
-            log("综合Agent+矛盾检测: 并行执行中（两者互不依赖）...",
-                stage="综合")
-            with ThreadPoolExecutor(max_workers=2) as ex:
-                fut_syn = ex.submit(synthesizer.run, topic)
-                fut_con = ex.submit(conflict_detector.run)
-                fut_syn.result()   # 任一失败异常照常上抛(与原串行一致)
-                conflicts = fut_con.result()
-            log("综合Agent完成: 报告+表格+图谱已生成", stage="综合")
-            n_con = sum(1 for c in conflicts if c["relation"] == "contradict")
-            log(f"矛盾检测完成: 直接矛盾{n_con}处 + "
-                f"张力{len(conflicts) - n_con}处", stage="矛盾检测")
-
         # ---- 6. 证据定位（方案一: 证据链穿透）----
         check_cancel()
         log("证据定位: 定位引用到PDF页面并高亮...", stage="证据定位")
@@ -254,6 +221,93 @@ def run_pipeline(topic: str, top_k: int, mode: str, years: int,
         ev_index = evidence_locator.build_evidence_index(cards_raw, reviews_raw)
         located_n = sum(1 for v in ev_index.values() if v.get("located"))
         log(f"证据定位完成: {located_n}条声明可穿透到PDF原文", stage="证据定位")
+
+        # ---- 8. 综述总结自动生成（2026-11-09: 不再由UI按钮触发）----
+        check_cancel()
+        log("综述总结: 自动生成叙述性综述与AI观点...", stage="综述总结")
+        try:
+            import llm_client
+            _sv_path = os.path.join(config.OUTPUT_DIR, "survey_summary.md")
+            try:
+                _papers_raw = json.load(open(
+                    os.path.join(config.DATA_DIR, "papers_meta.json"),
+                    encoding="utf-8"))
+                _cards_raw = json.load(open(
+                    os.path.join(config.DATA_DIR, "paper_cards.json"),
+                    encoding="utf-8"))
+                _reviews_raw = json.load(open(
+                    os.path.join(config.DATA_DIR, "review_results.json"),
+                    encoding="utf-8"))
+            except Exception:
+                _papers_raw, _cards_raw, _reviews_raw = [], [], []
+            # 只采用通过两级核验的声明（verdict=supported），保持不编造基调
+            _ok = set()
+            for _r in (_reviews_raw or []):
+                try:
+                    if _r.get("verdict", {}).get("verdict") == "supported":
+                        _ok.add(f"{_r['arxiv_id']}#{_r['claim_index']}")
+                except Exception:
+                    pass
+            _cards_by_id = {c.get("arxiv_id"): c for c in (_cards_raw or [])}
+            _blocks = []
+            for _i, _p in enumerate(_papers_raw or [], 1):
+                _card = _cards_by_id.get(_p.get("arxiv_id"))
+                _ls = [f"[{_i}] 标题: {_p.get('title', '')}",
+                       f"    年份: {_p.get('year', '')}  "
+                       f"被引次数: {_p.get('cited_by', 0)}"]
+                _ab = (_p.get("abstract") or "").strip()
+                if _ab:
+                    _ls.append(f"    摘要: {_ab[:500]}")
+                if _card:
+                    _kept = []
+                    for _ci, _cl in enumerate(_card.get("claims") or []):
+                        if not _ok or f"{_p.get('arxiv_id')}#{_ci}" in _ok:
+                            _kept.append(_cl.get("content", ""))
+                    for _c in _kept[:4]:
+                        _ls.append(f"    · 关键信息: {_c[:220]}")
+                _blocks.append("\n".join(_ls))
+            if _blocks:
+                _src = "\n\n".join(_blocks)
+                _sv_prompt = (
+                    "你是资深学术综述撰稿人兼领域分析师。"
+                    f"研究主题: {topic}\n"
+                    "基于给定的论文清单（[编号]为引用标识），输出两部分内容。\n\n"
+                    "【第一部分: 叙述性综述】\n"
+                    "- 用连贯的叙述性文字（禁止表格、禁止罗列式堆砌）梳理研究图景\n"
+                    "- 按脉络组织: 研究背景与动机 → 现有工作按思路分派 → "
+                    "各派代表工作与核心思想 → 发展趋势\n"
+                    "- 只能使用给定论文的信息，不得编造未提供的文献、数据或结论；"
+                    "提及具体工作时标注[编号]（600-900字）\n\n"
+                    "【第二部分: AI观点（仅供参考）】\n"
+                    "- 对检索出的论文做跨文献归纳偏置分析，输出3-5条观点\n"
+                    "- 每条观点必须遵循如下句式骨架（用实际归纳内容填充XX）:\n"
+                    "  现有 XX 方法在 XX 场景下具备 XX 优势，但普遍存在 XX 局限，"
+                    "在 XX 条件下效果不足，目前针对该问题的相关研究较少，"
+                    "有待进一步探索\n"
+                    "- 每条观点后标注依据: (支撑: [编号])；无直接支撑的推断标 (推断)\n"
+                    "- 观点之间不重复，各自覆盖不同的方法路线或维度\n\n"
+                    "输出为markdown，结构如下:\n"
+                    "# 📖 叙述性综述\n（正文）\n"
+                    "# 💡 AI观点（仅供参考）\n1. ...\n2. ...\n"
+                    "（结尾附一行提示: 以上观点为AI归纳推断，仅供参考）\n\n"
+                    "论文清单如下:\n" + _src)
+                _out_sv = llm_client.chat(
+                    [{"role": "system",
+                      "content": "你是严谨的学术综述撰稿人，忠于给定材料。"},
+                     {"role": "user", "content": _sv_prompt}],
+                    temperature=0.3)
+                if _out_sv:
+                    with open(_sv_path, "w", encoding="utf-8") as _f:
+                        _f.write(_out_sv)
+                    log("综述总结完成: 已保存 output/survey_summary.md",
+                        stage="综述总结")
+                else:
+                    log("综述总结生成返回为空，跳过", stage="综述总结")
+            else:
+                log("无可用论文数据，跳过综述总结生成", stage="综述总结")
+        except Exception as _sv_err:
+            log(f"综述总结自动生成失败(不影响流水线): {_sv_err}",
+                stage="综述总结")
 
         return report
     finally:
