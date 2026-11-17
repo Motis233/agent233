@@ -209,6 +209,39 @@ def run_pipeline(topic: str, top_k: int, mode: str, years: int,
         log(f"提取Agent完成: {len(cards)}张卡片, "
             f"{sum(len(c.claims) for c in cards)}条声明", stage="提取")
 
+        # ---- 4. 审查Agent ----
+        check_cancel()
+        log("审查Agent: 两级核验中（程序对齐+语义审查）...", stage="审查")
+        results = reviewer.run(papers, cards)
+        report = reviewer.generate_report(results)
+        log(f"审查Agent完成: 幻觉率 {report.hallucination_rate:.1%}", stage="审查")
+
+        # ---- 5+7. 综合与矛盾检测（并行, 2026-10-16优化4）----
+        # 两者都只依赖审查产物(paper_cards/review_results), 互不读取
+        # 对方输出(已核实synthesizer不读conflicts.json)——原先串行
+        # 纯属浪费, 深度档省30-60秒。快速模式仍跳过矛盾检测
+        check_cancel()
+        if fast:
+            log("综合Agent: 生成综述报告与引用图谱...", stage="综合")
+            synthesizer.run(topic)
+            log("综合Agent完成: 报告+表格+图谱已生成", stage="综合")
+            log("⚡快速模式: 跳过矛盾检测", stage="矛盾检测")
+            # 落盘空结果, 避免上一主题的conflicts.json残留误导下游展示
+            save_json(os.path.join(config.DATA_DIR, "conflicts.json"), [])
+        else:
+            from agents import conflict_detector
+            log("综合Agent+矛盾检测: 并行执行中（两者互不依赖）...",
+                stage="综合")
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                fut_syn = ex.submit(synthesizer.run, topic)
+                fut_con = ex.submit(conflict_detector.run)
+                fut_syn.result()   # 任一失败异常照常上抛(与原串行一致)
+                conflicts = fut_con.result()
+            log("综合Agent完成: 报告+表格+图谱已生成", stage="综合")
+            n_con = sum(1 for c in conflicts if c["relation"] == "contradict")
+            log(f"矛盾检测完成: 直接矛盾{n_con}处 + "
+                f"张力{len(conflicts) - n_con}处", stage="矛盾检测")
+
         # ---- 6. 证据定位（方案一: 证据链穿透）----
         check_cancel()
         log("证据定位: 定位引用到PDF页面并高亮...", stage="证据定位")
