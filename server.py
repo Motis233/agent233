@@ -382,6 +382,11 @@ async def api_result(tid: str, request: Request):
     if not os.path.isdir(d):
         raise HTTPException(404, "任务无产物（尚未运行完成或快照丢失）")
     out: dict = {"id": tid}
+    # 只有成功任务才回产物：失败/终止任务的快照目录里可能残留
+    # 上一次运行留在共享 DATA/OUTPUT 的旧文件，回传会张冠李戴
+    t = _find(_load_tasks(), tid)
+    if t is None or t.get("state") != "done":
+        return out
     files = {"report": "final_report.md", "review_table": "review_table.md",
              "papers": "papers.json", "cards": "paper_cards.json",
              "review": "review_results.json", "conflicts": "conflicts.json",
