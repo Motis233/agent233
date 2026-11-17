@@ -311,24 +311,36 @@ def build_graph(papers: list[PaperMeta],
     # ---- 节点属性（颜色区分身份）----
     color_map = {"internal": "#e74c3c", "external": "#bdc3c7",
                  "belongs": "#3498db"}
+
+    def _short(s: str, n: int = 30) -> str:
+        s = (s or "").strip()
+        return s if len(s) <= n else s[:n] + "…"
+
     for node in G.nodes():
         if node in our_ids:
             G.nodes[node]["color"] = "#2ecc71"          # 绿: 检索到的论文
             G.nodes[node]["title"] = (f"{title_by_id[node]} "
                                       f"({year_by_id[node]})")
+            # 节点直接显示论文标题（截断），悬停看完整标题+年份；
+            # 旧版标签是arXiv编号，可读性差（用户反馈）
+            G.nodes[node]["label"] = _short(title_by_id[node])
             G.nodes[node]["size"] = 20
         elif G.nodes[node].get("kind") == "category":
             G.nodes[node]["color"] = "#f39c12"          # 橙: 方法分类
             G.nodes[node]["size"] = 15
         else:
             G.nodes[node]["color"] = "#95a5a6"          # 灰: 外部被引论文
+            # 外部节点显示W-ID尾段（旧版显示完整openalex URL，视觉噪音）
+            G.nodes[node]["label"] = str(node).rstrip("/").split("/")[-1]
             G.nodes[node]["size"] = 8
     for u, v, data in G.edges(data=True):
         data["color"] = color_map.get(data.get("kind"), "#bdc3c7")
 
     # ---- 渲染为交互式HTML ----
     net = Network(height="600px", width="100%", directed=True,
-                  bgcolor="#ffffff", font_color="#333333")
+                  bgcolor="#ffffff", font_color="#333333",
+                  heading=f"引用图谱 · {graph_mode} · "
+                          f"{G.number_of_nodes()}节点/{G.number_of_edges()}边")
     net.from_nx(G)
     net.repulsion(node_distance=120, spring_length=150)
     net.show_buttons(filter_=["physics"])

@@ -1274,8 +1274,8 @@ function setNotes(id, arr) {
 function updateReader() {
   if (!readerId) return;
   const meta = metaList().find(p => p.arxiv_id === readerId);
-  $("#reader-frame").src = `/api/pdf/${readerId}`;
-  $("#reader-dl").href = `/api/pdf/${readerId}`;
+  $("#reader-frame").src = `/api/pdf/${readerId}${pwq()}`;
+  $("#reader-dl").href = `/api/pdf/${readerId}${pwq()}`;
   $("#reader-meta").innerHTML = meta
     ? `<b>${esc(meta.title)}</b> · ${meta.year || "年份不详"} · 被引 ${meta.cited_by ?? 0} · arXiv:${esc(readerId)}`
     : `arXiv:${esc(readerId)}`;
@@ -1331,7 +1331,7 @@ function jumpPage(id, page) {
   $("#reader-sel").value = id;
   readerId = id;
   updateReader();
-  $("#reader-frame").src = `/api/pdf/${id}#page=${page}`;
+  $("#reader-frame").src = `/api/pdf/${id}${pwq()}#page=${page}`;
   toast(`已跳转《${id}》第 ${page} 页`);
 }
 function quoteNote(id, page, snippet) {

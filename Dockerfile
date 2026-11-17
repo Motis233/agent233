@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir \
     "pydantic>=2.13" \
     "fastapi>=0.115" \
     "uvicorn[standard]>=0.30" \
+    "python-docx>=1.1" \
     "requests>=2.31"
 
 COPY . .
