@@ -76,6 +76,60 @@ button { padding: 8px 14px; border: none; border-radius: 8px; cursor: pointer;
             border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
 .conflict.contradict { border-left-color: var(--red); }
 .conflict .who { font-size: 12px; color: var(--muted); }
+/* 统计条 */
+#stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+            gap: 8px; margin: 12px 0 2px; }
+.stat { background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+        padding: 8px 10px; text-align: center; }
+.stat .v { font-size: 17px; font-weight: 800; color: var(--brand); }
+.stat .v.bad { color: var(--red); }
+.stat .k { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* 论文卡片 */
+.paper-card { display: flex; align-items: center; gap: 10px; border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: #fff; }
+.paper-card:hover { border-color: var(--brand); }
+.paper-num { width: 26px; height: 26px; border-radius: 8px; background: var(--brand-lt);
+  color: var(--brand); font-weight: 700; display: flex; align-items: center;
+  justify-content: center; font-size: 12px; flex: none; }
+.paper-main { flex: 1; min-width: 0; }
+.paper-title { font-size: 13.5px; font-weight: 600; line-height: 1.45; }
+.paper-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.pdf-btn { flex: none; font-size: 12px; font-weight: 700; color: var(--brand);
+  background: var(--brand-lt); border-radius: 8px; padding: 5px 12px;
+  text-decoration: none; }
+.pdf-btn:hover { background: var(--brand); color: #fff; }
+
+/* 矛盾卡片 */
+.conf-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+  margin-bottom: 10px; background: #fff; }
+.conf-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 8px; }
+.pill { font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 999px;
+  white-space: nowrap; }
+.pill.bad { background: var(--red-lt); color: var(--red); }
+.pill.warn { background: var(--amber-lt); color: var(--amber); }
+.pill.ok { background: var(--green-lt); color: var(--green); }
+.conf-topic { font-size: 12.5px; color: var(--slate); font-weight: 600; }
+.conf-sev { font-size: 11px; color: var(--muted); margin-left: auto; }
+.conf-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 860px) { .conf-pair { grid-template-columns: 1fr; } }
+.conf-side { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  background: var(--bg); }
+.conf-side.a { border-left: 3px solid var(--brand); }
+.conf-side.b { border-left: 3px solid var(--amber); }
+.conf-paper { font-size: 12.5px; font-weight: 700; margin-bottom: 4px; }
+.conf-paper span { color: var(--muted); font-weight: 400; margin-left: 4px; }
+.conf-content { font-size: 12.5px; line-height: 1.65; }
+.conf-expl { margin-top: 8px; font-size: 12.5px; color: var(--slate);
+  background: var(--brand-lt); border-radius: 8px; padding: 8px 10px; line-height: 1.6; }
+
+/* 核验明细表 */
+.rev-table { border-collapse: collapse; width: 100%; }
+.rev-table th, .rev-table td { border: 1px solid var(--border); padding: 7px 9px;
+  font-size: 12.5px; text-align: left; vertical-align: top; }
+.rev-table th { background: var(--brand-lt); }
+
 .empty { color: var(--muted); text-align: center; padding: 40px 0; }
 iframe { width: 100%; height: 520px; border: 1px solid var(--border); border-radius: 8px; }
 .hidden { display: none !important; }
@@ -152,6 +206,7 @@ iframe { width: 100%; height: 520px; border: 1px solid var(--border); border-rad
           <span id="res-badge" class="badge"></span>
           <span id="res-hallu" class="badge hidden"></span>
         </div>
+        <div id="stat-row" class="hidden"></div>
         <div class="tabs">
           <button data-tab="report" class="on">综述报告</button>
           <button data-tab="papers">论文列表</button>
@@ -348,28 +403,87 @@ async function showResult(id, t) {
              : `<div class="empty">没有报告（任务${stateText(t.state)}）</div>`;
   // 论文
   const papers = r.papers || [];
-  $("#tab-papers").innerHTML = papers.length ? `<table><tr>
-      <th>#</th><th>标题</th><th>年份</th><th>被引</th><th>PDF</th></tr>` +
-      papers.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(p.title)}</td>
-        <td>${p.year || "-"}</td><td>${p.cited_by ?? "-"}</td>
-        <td>${p.arxiv_id ? `<a href="/api/pdf/${p.arxiv_id}" target="_blank">打开</a>` : "-"}</td></tr>`).join("") +
-      "</table>" : `<div class="empty">无论文数据</div>`;
-  // 矛盾
+  $("#tab-papers").innerHTML = papers.length ? papers.map((p, i) =>
+    `<div class="paper-card">
+      <div class="paper-num">${i + 1}</div>
+      <div class="paper-main">
+        <div class="paper-title">${esc(p.title)}</div>
+        <div class="paper-meta">${p.year || "年份不详"} · 被引 ${p.cited_by ?? "-"}</div>
+      </div>
+      ${p.arxiv_id ? `<a class="pdf-btn" href="/api/pdf/${p.arxiv_id}" target="_blank">PDF</a>` : ""}
+    </div>`).join("") : `<div class="empty">无论文数据</div>`;
+
+  // 矛盾：结构化卡片（a/b 两侧 + 解释），兼容旧的字符串/summary 形态
   const conflicts = r.conflicts || [];
-  $("#tab-conflicts").innerHTML = conflicts.length ? conflicts.map(c =>
-    `<div class="conflict ${c.relation}">
-      <b>${c.relation === "contradict" ? "⚡ 直接矛盾" : "张力"}</b>
-      <div style="margin:4px 0">${esc(c.summary || c.msg || JSON.stringify(c).slice(0, 200))}</div>
-      <div class="who">${esc((c.a_paper || "") + " ↔ " + (c.b_paper || ""))}</div>
-    </div>`).join("") : `<div class="empty">未发现矛盾/张力（或该任务未运行矛盾检测）</div>`;
-  // 核验
-  const rev = r.review || {};
-  const results = rev.results || rev || [];
-  const rows = Array.isArray(results) ? results.slice(0, 100) : [];
-  $("#tab-review").innerHTML = r.review_table ?
-    `<div class="md">${marked.parse(r.review_table)}</div>` :
-    (rows.length ? `<pre style="font-size:12px;white-space:pre-wrap">${esc(JSON.stringify(rows, null, 1).slice(0, 8000))}</pre>`
-                 : `<div class="empty">无核验明细</div>`);
+  const confSide = (x, cls) => {
+    if (!x || typeof x !== "object") return "";
+    return `<div class="conf-side ${cls}">
+      <div class="conf-paper">${esc(x.paper_title || "")}<span>${x.year || ""}</span></div>
+      <div class="conf-content">${esc(x.content || x.quote || "")}</div>
+    </div>`;
+  };
+  $("#tab-conflicts").innerHTML = conflicts.length ? conflicts.map(c => {
+    if (typeof c === "string")
+      return `<div class="conf-card"><div class="conf-content">${esc(c)}</div></div>`;
+    const rel = c.relation === "contradict";
+    const aObj = c.a && typeof c.a === "object" ? c.a : null;
+    const bObj = c.b && typeof c.b === "object" ? c.b : null;
+    const fallback = !aObj && !bObj ? `<div class="conf-content">${esc(c.summary || c.msg || "")}</div>` : "";
+    return `<div class="conf-card">
+      <div class="conf-head">
+        <span class="pill ${rel ? "bad" : "warn"}">${rel ? "⚡ 直接矛盾" : "⚖ 张力"}</span>
+        ${c.topic ? `<span class="conf-topic">${esc(c.topic)}</span>` : ""}
+        ${c.severity != null ? `<span class="conf-sev">严重度 ${c.severity}</span>` : ""}
+      </div>
+      ${aObj || bObj ? `<div class="conf-pair">${confSide(aObj, "a")}${confSide(bObj, "b")}</div>` : ""}
+      ${fallback}
+      ${c.explanation ? `<div class="conf-expl">${esc(c.explanation)}</div>` : ""}
+    </div>`;
+  }).join("") : `<div class="empty">未发现矛盾/张力（或该任务未运行矛盾检测）</div>`;
+
+  // 统计条
+  const revRows = Array.isArray(r.review) ? r.review
+    : (r.review && Array.isArray(r.review.results) ? r.review.results : []);
+  if (papers.length || revRows.length) {
+    const total = revRows.length;
+    const okN = revRows.filter(v => v && !v.hallucination &&
+      v.quote_alignment && v.verdict && v.verdict.verdict === "supported").length;
+    const halluN = revRows.filter(v => v && v.hallucination).length;
+    const stat = (v, k, cls) => `<div class="stat"><div class="v ${cls || ""}">${v}</div><div class="k">${k}</div></div>`;
+    const sr = $("#stat-row");
+    sr.innerHTML =
+      stat(papers.length, "收录论文") +
+      (total ? stat(total, "声明总数") + stat(okN, "可信声明") +
+        stat(halluN, "剔除幻觉", halluN ? "bad" : "") +
+        (t.hallucination_rate != null ? stat((t.hallucination_rate * 100).toFixed(1) + "%", "幻觉率",
+          t.hallucination_rate <= 0.12 ? "" : "bad") : "")
+        : "");
+    sr.classList.remove("hidden");
+  }
+  // 核验：结构化表格（声明 | 引用对齐 | 语义裁决 | 结论），兜底 markdown
+  if (r.review_table) {
+    $("#tab-review").innerHTML = `<div class="md">${marked.parse(r.review_table)}</div>`;
+  } else if (revRows.length && revRows[0] && revRows[0].claim_content !== undefined) {
+    const VC = { supported: ["支持", "ok"], unsupported: ["不支持", "bad"],
+                 contradicted: ["矛盾", "bad"], abstained: ["暂缓", "warn"] };
+    $("#tab-review").innerHTML = `<table class="rev-table"><tr>
+        <th style="width:46%">声明</th><th>引用对齐</th><th>语义裁决</th><th>最终结论</th></tr>` +
+      revRows.slice(0, 100).map(v => {
+        const sem = (v.verdict && v.verdict.verdict) || "abstained";
+        const [label, cls] = VC[sem] || [sem, "warn"];
+        const fin = v.hallucination ? ["幻觉·剔除", "bad"]
+          : (sem === "supported" && v.quote_alignment ? ["可信", "ok"] : ["暂缓/不计", "warn"]);
+        const fm = v.failure_mode && v.failure_mode !== "none"
+          ? `<div style="color:var(--muted);font-size:11px;margin-top:2px">失败模式: ${esc(v.failure_mode)}</div>` : "";
+        return `<tr>
+          <td>${esc(v.claim_content || "")}${fm}</td>
+          <td>${v.quote_alignment ? "✓" : "✗"} ${v.aligned_quote_count ?? ""}/${v.quote_count ?? ""}</td>
+          <td><span class="pill ${cls}">${label}</span></td>
+          <td><span class="pill ${fin[1]}">${fin[0]}</span></td></tr>`;
+      }).join("") + `</table>`;
+  } else {
+    $("#tab-review").innerHTML = `<div class="empty">无核验明细</div>`;
+  }
   // 图谱
   $("#tab-graph").innerHTML =
     `<iframe src="/api/tasks/${id}/graph${pw ? "?pw=" + encodeURIComponent(pw) : ""}"></iframe>`;
