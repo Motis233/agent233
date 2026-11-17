@@ -98,10 +98,11 @@ button:active { transform: scale(.98); }
         border-radius: 10px; padding: 12px 14px; font-family: Consolas, "Cascadia Mono", monospace;
         font-size: 12px; line-height: 1.75; border: 1px solid #1e2a44; }
 #logs .st { color: #a5b4fc; font-weight: 700; }
-.tabs { display: flex; gap: 2px; margin-top: 16px; border-bottom: 1px solid var(--border); }
-.tabs button { background: none; border: none; padding: 9px 15px; color: var(--slate);
+.tabs { display: flex; gap: 2px; margin-top: 16px; border-bottom: 1px solid var(--border);
+        overflow-x: auto; scrollbar-width: thin; }
+.tabs button { background: none; border: none; padding: 9px 13px; color: var(--slate);
                border-bottom: 2.5px solid transparent; border-radius: 8px 8px 0 0;
-               font-weight: 500; }
+               font-weight: 500; white-space: nowrap; flex: none; }
 .tabs button:hover { color: var(--brand); background: var(--brand-lt); }
 .tabs button.on { color: var(--brand); border-bottom-color: var(--brand); font-weight: 700;
                   background: transparent; }
@@ -208,8 +209,106 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
          padding: 11px 18px; border-radius: 10px; font-size: 13px; z-index: 99;
          box-shadow: var(--shadow-lg); animation: fadeUp .25s ease both; }
 
+/* ===== 老页面合并功能样式 ===== */
+.sort-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.sort-row button { padding: 6px 14px; border-radius: 999px; font-size: 12.5px;
+  background: #fff; border: 1px solid var(--border); color: var(--slate); font-weight: 600; }
+.sort-row button.on { background: var(--brand-lt); border-color: var(--brand);
+  color: var(--brand); }
+.badge-sig { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 9px;
+  border-radius: 999px; margin-left: 6px; background: var(--brand-lt); color: var(--brand); }
+.badge-sig.hot { background: var(--red-lt); color: var(--red); }
+.badge-sig.rel { background: var(--green-lt); color: var(--green); }
+.expander { border: 1px solid var(--border); border-radius: 10px; background: #fff;
+  margin-bottom: 9px; overflow: hidden; }
+.expander > summary { cursor: pointer; padding: 10px 14px; font-size: 13px;
+  font-weight: 600; list-style: none; user-select: none; }
+.expander > summary::before { content: "▸ "; color: var(--muted); }
+.expander[open] > summary::before { content: "▾ "; }
+.expander > .exp-body { padding: 4px 14px 12px; font-size: 12.5px; line-height: 1.75;
+  color: var(--slate); border-top: 1px dashed var(--border); }
+.claim-item { display: flex; gap: 8px; align-items: flex-start; padding: 9px 0;
+  border-bottom: 1px dashed var(--border); }
+.claim-item:last-child { border-bottom: none; }
+.claim-type { flex: none; font-size: 11px; font-weight: 700; padding: 2px 9px;
+  border-radius: 999px; margin-top: 1px; }
+.claim-type.method { background: var(--brand-lt); color: var(--brand); }
+.claim-type.result { background: var(--green-lt); color: var(--green); }
+.claim-type.limitation { background: var(--amber-lt); color: var(--amber); }
+.claim-content { flex: 1; line-height: 1.65; font-size: 12.5px; }
+.mini-btn { flex: none; font-size: 11.5px; font-weight: 700; color: var(--brand);
+  background: var(--brand-lt); border: 1px solid #c7d2fe; border-radius: 8px;
+  padding: 3px 10px; cursor: pointer; }
+.mini-btn:hover { background: var(--brand); color: #fff; }
+.quote-blk { border-left: 3px solid #c7d2fe; background: #fafbff; color: var(--slate);
+  padding: 6px 10px; margin: 5px 0 5px 0; border-radius: 0 8px 8px 0; font-size: 12px;
+  line-height: 1.6; }
+.quote-blk .sec { font-weight: 700; color: var(--brand); font-size: 11px; }
+/* 聊天 */
+.chat { display: flex; flex-direction: column; gap: 10px; }
+.msg { max-width: 88%; padding: 10px 14px; border-radius: 12px; line-height: 1.7;
+  font-size: 13.5px; animation: fadeUp .2s ease both; }
+.msg.user { align-self: flex-end; background: var(--brand-grad); color: #fff;
+  border-bottom-right-radius: 4px; }
+.msg.ai { align-self: flex-start; background: #fff; border: 1px solid var(--border);
+  border-bottom-left-radius: 4px; max-width: 96%; }
+.msg .src { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.msg .warn { background: var(--amber-lt); color: var(--amber); border-radius: 8px;
+  padding: 6px 10px; font-size: 12px; margin-top: 6px; }
+.chat-input { display: flex; gap: 8px; margin-top: 12px; }
+.chat-input input { flex: 1; padding: 10px 13px; border: 1px solid var(--border);
+  border-radius: 10px; font: inherit; background: #fbfcfe; }
+.chat-input input:focus { outline: none; border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(79,70,229,.12); }
+.chat-hint { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.pool-box { border: 1px solid var(--border); border-radius: 12px; background: #fafbff;
+  padding: 12px 14px; margin-top: 14px; max-height: 260px; overflow-y: auto; }
+.pool-box .pc { font-size: 12px; line-height: 1.6; padding: 6px 0;
+  border-bottom: 1px dashed var(--border); }
+.pool-box .pc:last-child { border-bottom: none; }
+.pool-box .eid { font-size: 10.5px; color: var(--muted); }
+/* 弹层（证据穿透） */
+#modal { position: fixed; inset: 0; background: rgba(15,23,42,.48); z-index: 50;
+  display: flex; align-items: center; justify-content: center; padding: 16px; }
+#modal .box { background: #fff; border-radius: 14px; max-width: 760px; width: 100%;
+  max-height: 84vh; overflow-y: auto; padding: 18px 20px; box-shadow: var(--shadow-lg); }
+#modal h3 { font-size: 14.5px; margin-bottom: 8px; }
+#modal img { max-width: 100%; border: 1px solid var(--border); border-radius: 8px;
+  margin: 8px 0; }
+#modal .cap { font-size: 11.5px; color: var(--muted); }
+/* 通用小控件 */
+.tool-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+  margin: 10px 0; }
+.tool-row input[type=text] { flex: 1; min-width: 180px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 10px; font: inherit;
+  background: #fbfcfe; }
+.tool-row input[type=text]:focus { outline: none; border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(79,70,229,.12); }
+.tool-row select { max-width: 100%; }
+.act-btn { background: var(--brand-lt); color: var(--brand); border: 1px solid #c7d2fe;
+  font-size: 12.5px; padding: 7px 14px; border-radius: 10px; font-weight: 700; }
+.act-btn:hover { background: var(--brand); color: #fff; border-color: var(--brand); }
+.act-btn.ghost { background: #fff; color: var(--slate); border-color: var(--border); }
+.act-btn:disabled { opacity: .5; cursor: not-allowed; }
+.gen-box { border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  padding: 14px 16px; margin-top: 10px; }
+.section-title { font-size: 13.5px; font-weight: 700; margin: 14px 0 8px; }
+.note-item { border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px;
+  margin-bottom: 8px; background: #fff; font-size: 12.5px; line-height: 1.6; }
+.note-item .np { font-weight: 700; color: var(--brand); }
+.note-item .nq { color: var(--muted); font-style: italic; }
+.cmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 860px) { .cmp-grid { grid-template-columns: 1fr; } }
+.cmp-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+  background: #fff; box-shadow: var(--shadow); }
+.cmp-card h3 { font-size: 13.5px; margin-bottom: 4px; }
+.cmp-card .cm { font-size: 11.5px; color: var(--muted); margin-bottom: 8px; }
+.reader-grid { display: grid; grid-template-columns: 2.6fr 1fr; gap: 12px; }
+@media (max-width: 900px) { .reader-grid { grid-template-columns: 1fr; } }
+
 /* 滚动条 */
-.tab-body::-webkit-scrollbar, #logs::-webkit-scrollbar, #task-list::-webkit-scrollbar {
+.tab-body::-webkit-scrollbar, #logs::-webkit-scrollbar, #task-list::-webkit-scrollbar,
+.tabs::-webkit-scrollbar {
   width: 8px; height: 8px; }
 .tab-body::-webkit-scrollbar-thumb, #logs::-webkit-scrollbar-thumb {
   background: rgba(100,116,139,.35); border-radius: 999px; }
@@ -306,20 +405,40 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
           </details>
         </div>
         <div class="tabs">
-          <button data-tab="report" class="on">综述报告</button>
-          <button data-tab="papers">论文列表</button>
-          <button data-tab="conflicts">矛盾与张力</button>
-          <button data-tab="review">核验明细</button>
-          <button data-tab="graph">引用图谱</button>
+          <button data-tab="report" class="on">📝 综述报告</button>
+          <button data-tab="search">🔍 检索结果</button>
+          <button data-tab="cards">📄 信息卡片</button>
+          <button data-tab="review">✅ 核验明细</button>
+          <button data-tab="qa">💬 可信问答</button>
+          <button data-tab="assist">🤖 AI助手</button>
+          <button data-tab="survey">📚 综述总结</button>
+          <button data-tab="conflicts">⚡ 矛盾与张力</button>
+          <button data-tab="table">📊 综述表格</button>
+          <button data-tab="graph">🕸 引用图谱</button>
+          <button data-tab="reader">📚 论文原文</button>
+          <button data-tab="compare">⚔️ 对比阅读</button>
+          <button data-tab="guide">📖 新手指南</button>
         </div>
         <div class="tab-body" id="tab-report"><div class="md"></div></div>
-        <div class="tab-body hidden" id="tab-papers"></div>
-        <div class="tab-body hidden" id="tab-conflicts"></div>
+        <div class="tab-body hidden" id="tab-search"></div>
+        <div class="tab-body hidden" id="tab-cards"></div>
         <div class="tab-body hidden" id="tab-review"></div>
+        <div class="tab-body hidden" id="tab-qa"></div>
+        <div class="tab-body hidden" id="tab-assist"></div>
+        <div class="tab-body hidden" id="tab-survey"></div>
+        <div class="tab-body hidden" id="tab-conflicts"></div>
+        <div class="tab-body hidden" id="tab-table"></div>
         <div class="tab-body hidden" id="tab-graph"></div>
+        <div class="tab-body hidden" id="tab-reader"></div>
+        <div class="tab-body hidden" id="tab-compare"></div>
+        <div class="tab-body hidden" id="tab-guide"></div>
       </div>
     </div>
   </div>
+</div>
+<!-- 证据穿透弹层 -->
+<div id="modal" class="hidden" onclick="if(event.target===this)this.classList.add('hidden')">
+  <div class="box" id="modal-box"></div>
 </div>
 
 <script>
@@ -476,7 +595,28 @@ $("#btn-cancel").onclick = async () => {
   } catch (e) { toast(e.message); }
 };
 
-/* ---------------- 结果展示 ---------------- */
+/* ---------------- 结果展示（老页面全功能合并） ---------------- */
+let CUR = null;                 // {tid, t, r} 当前任务与产物
+let qaHistory = [], qaPool = null, qaPoolLoaded = false, qaInited = false;
+let assistHistory = [], assistInited = false;
+let surveyText = "", plainText = "";
+let searchSort = 0, chatScroll = null;
+const SORTS = ["🎯 综合推荐", "🤖 相关优先", "🔥 经典优先", "🆕 最新优先"];
+const CLAIM_TC = {method: "🔵 方法", result: "🟢 结果", limitation: "🟠 局限"};
+let EVLOOKUP = {};
+
+function pwq() { return pw ? "?pw=" + encodeURIComponent(pw) : ""; }
+function metaList() {
+  if (CUR.r.meta && CUR.r.meta.length) return CUR.r.meta;
+  return (CUR.r.papers || []).map(p => ({arxiv_id: p.arxiv_id, title: p.title,
+    year: p.year, cited_by: p.cited_by}));
+}
+function downloadText(name, text) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type: "text/markdown;charset=utf-8"}));
+  a.download = name; a.click(); URL.revokeObjectURL(a.href);
+}
+
 async function showResult(id, t) {
   $("#placeholder").classList.add("hidden");
   $("#progress-panel").classList.add("hidden");
@@ -507,31 +647,462 @@ async function showResult(id, t) {
 
   let r = {};
   try { r = await api(`/api/tasks/${id}/result`); } catch (e) { /* 无产物 */ }
+  CUR = {tid: id, t, r};
+  // 重置各标签页会话状态
+  qaHistory = []; qaPool = null; qaPoolLoaded = false; qaInited = false;
+  assistHistory = []; assistInited = false;
+  surveyText = ""; plainText = ""; searchSort = 0; EVLOOKUP = {};
 
-  // 报告
-  $("#tab-report").innerHTML =
-    r.report ? `<div class="md">${marked.parse(r.report)}</div>`
-             : `<div class="empty">没有报告（任务${stateText(t.state)}）</div>`;
-  // 论文
-  const papers = r.papers || [];
-  $("#tab-papers").innerHTML = papers.length ? papers.map((p, i) =>
-    `<div class="paper-card">
-      <div class="paper-num">${i + 1}</div>
-      <div class="paper-main">
-        <div class="paper-title">${esc(p.title)}</div>
-        <div class="paper-meta">${p.year || "年份不详"} · 被引 ${p.cited_by ?? "-"}</div>
-      </div>
-      ${p.arxiv_id ? `<a class="pdf-btn" href="/api/pdf/${p.arxiv_id}" target="_blank">PDF</a>` : ""}
-    </div>`).join("") : `<div class="empty">无论文数据</div>`;
+  renderReport(); renderSearch(); renderCards(); renderReview();
+  renderSurvey(); renderConflicts(); renderTable(); renderGraph(); renderGuide();
 
-  // 矛盾：结构化卡片（a/b 两侧 + 解释），兼容旧的字符串/summary 形态
-  const conflicts = r.conflicts || [];
+  // 统计条
+  const revRows = Array.isArray(r.review) ? r.review : [];
+  if (metaList().length || revRows.length) {
+    const total = revRows.length;
+    const okN = revRows.filter(v => v && !v.hallucination &&
+      v.quote_alignment && v.verdict && v.verdict.verdict === "supported").length;
+    const halluN = revRows.filter(v => v && v.hallucination).length;
+    const stat = (v, k, cls) => `<div class="stat"><div class="v ${cls || ""}">${v}</div><div class="k">${k}</div></div>`;
+    const sr = $("#stat-row");
+    sr.innerHTML =
+      stat(metaList().length, "收录论文") +
+      (total ? stat(total, "声明总数") + stat(okN, "可信声明") +
+        stat(halluN, "剔除幻觉", halluN ? "bad" : "") +
+        (t.hallucination_rate != null ? stat((t.hallucination_rate * 100).toFixed(1) + "%", "幻觉率",
+          t.hallucination_rate <= 0.12 ? "" : "bad") : "")
+        : "");
+    sr.classList.remove("hidden");
+  }
+}
+
+/* ---- 标签: 综述报告（导读 + 小白解读 + 三格式导出） ---- */
+function renderReport() {
+  const {tid, t, r} = CUR;
+  $("#tab-report").innerHTML = `
+    <details class="expander"><summary>📖 如何阅读这份报告？（第一次看请点开）</summary>
+      <div class="exp-body"><b>这是一份什么文档？</b> 文献综述=某个研究领域的"地图"：
+      它不发明新东西，而是把多篇论文的观点<b>系统梳理</b>给你看。<br><br>
+      <b>典型结构与读法</b>: ① 背景部分（领域在解决什么问题）→ ② 方法分类（现有方案分几派）
+      → ③ 对比与结论（效果差异、适用场景）→ ④ 局限性（未解决的问题，往往是选题金矿）。<br><br>
+      <b>可信度说明</b>: 报告只使用了<b>通过两级核验的声明</b>（程序查引用真伪 + AI查语义曲解），
+      每条关键信息理论上都可回溯到PDF原文——这是它和"让ChatGPT直接写综述"的本质区别。</div></details>
+    <div class="tool-row">
+      <button class="act-btn" id="btn-plain">🍼 生成小白解读</button>
+      ${r.report ? `<button class="act-btn ghost" id="btn-dl-md">⬇️ Markdown</button>
+      <a class="act-btn ghost" href="/api/tasks/${tid}/export/docx${pwq()}">⬇️ Word (.docx)</a>
+      <a class="act-btn ghost" href="/api/tasks/${tid}/export/latex${pwq()}">⬇️ LaTeX+BibTeX (.zip)</a>` : ""}
+    </div>
+    <div id="plain-box" class="gen-box hidden"></div>
+    ${r.report ? `<div class="md">${marked.parse(r.report)}</div>`
+               : `<div class="empty">没有报告（任务${stateText(t.state)}）</div>`}`;
+  const bp = $("#btn-plain");
+  if (bp) bp.onclick = genPlain;
+  const dm = $("#btn-dl-md");
+  if (dm) dm.onclick = () => downloadText("literature_review.md", CUR.r.report);
+}
+
+async function genPlain() {
+  const box = $("#plain-box"), btn = $("#btn-plain");
+  box.classList.remove("hidden");
+  btn.disabled = true;
+  box.innerHTML = '<div class="chat-hint">⏳ 正在生成… 下方文字逐步出现（讲解详尽，可能需要数分钟）</div>';
+  plainText = "";
+  try {
+    await streamText(`/api/tasks/${CUR.tid}/plain`, {}, c => {
+      plainText += c;
+      box.innerHTML = `<div class="chat-hint">⏳ 生成中…（重新点击按钮可重新生成）</div><div class="md">${marked.parse(plainText)}</div>`;
+    });
+    box.innerHTML = `<div class="chat-hint">✅ 小白解读已生成</div><div class="md">${marked.parse(plainText)}</div>`;
+  } catch (e) { box.innerHTML = `<div class="chat-hint">生成失败: ${esc(e.message)}</div>`; }
+  btn.disabled = false;
+}
+
+/* ---- 标签: 检索结果（排序 + 徽章 + 四路信号分解） ---- */
+function norm(s) { return (s || "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, ""); }
+function paperBadges(p) {
+  const b = [];
+  if ((p.chain_hits || 0) >= 3) b.push(`🔗引用链经典(被${p.chain_hits}篇种子引用)`);
+  else if ((p.chain_hits || 0) > 0) b.push(`🔗引用链(${p.chain_hits})`);
+  if ((p.cited_by || 0) >= 300) b.push(`🔥高被引(${p.cited_by})`);
+  if ((p.relevance_score || 0) >= 4.5) b.push(`🤖高度切题(${p.relevance_score})`);
+  return b;
+}
+function sortPapers(meta) {
+  const s = SORTS[searchSort];
+  const by = (k) => (x, y) => (y[k] || 0) - (x[k] || 0);
+  if (s === "🤖 相关优先") return [...meta].sort(by("relevance_score"));
+  if (s === "🔥 经典优先") return [...meta].sort(by("cited_by"));
+  if (s === "🆕 最新优先") return [...meta].sort(by("year"));
+  return [...meta].sort(by("final_score"));
+}
+function renderSearch() {
+  const meta = metaList();
+  const el = $("#tab-search");
+  if (!meta.length) { el.innerHTML = '<div class="empty">暂无检索结果数据</div>'; return; }
+  el.innerHTML = `
+    <details class="expander"><summary>🔬 检索透明度 · 四路信号召回分解</summary>
+      <div class="exp-body" id="sig-body"></div></details>
+    <div class="chat-hint" style="margin-top:10px">排序依据四路信号加权: <b>相关性</b>(LLM切题度) + <b>RRF共识</b>(多角度命中) + <b>影响力</b>(被引数) + <b>引用链</b>(被种子论文共同引用，奠基经典专属)。</div>
+    <div class="sort-row" id="sort-row"></div>
+    <div id="search-list"></div>`;
+  renderSig(); renderSortRow(); renderSearchList();
+}
+function renderSig() {
+  const {r} = CUR; const meta = metaList();
+  const plan = r.plan || {};
+  const nChain = meta.filter(p => (p.chain_hits || 0) > 0).length;
+  const exempt = meta.filter(p => p.relevance_score == null);
+  const classics = plan.classic_titles || [];
+  const poolT = meta.map(p => norm(p.title));
+  const injected = classics.map(ct => {
+    const nc = norm(ct);
+    const hit = nc ? meta.find((p, i) => poolT[i] && (poolT[i].includes(nc) || nc.includes(poolT[i]))) : null;
+    return {t: ct, hit};
+  });
+  const stat = (v, k) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`;
+  let h = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:6px 0 12px">`
+    + stat(`${(plan.keywords || []).length} 组`, "🔑 关键词双路")
+    + stat(`${nChain} 篇命中`, "🔗 引用链挖掘")
+    + (injected.length ? stat(`${injected.filter(x => x.hit).length}/${injected.length}`, "🧠 LLM先验注入") : stat("—", "🧠 LLM先验注入"))
+    + stat(`${exempt.length} 篇`, "🛡 免检通道") + `</div>`;
+  h += `<div class="section-title">每篇论文的四信号分解（按综合推荐排序）</div><table class="rev-table"><tr>
+        <th>#</th><th style="width:40%">论文</th><th>相关性</th><th>RRF</th><th>被引</th><th>引用链</th><th>综合分</th></tr>` +
+    sortPapers(meta).map((p, i) => `<tr><td>${i + 1}</td><td>${esc((p.title || "").slice(0, 38))}</td>
+        <td>${p.relevance_score ?? "🛡免检"}</td><td>${(p.rrf_score ?? 0).toFixed ? (p.rrf_score || 0).toFixed(3) : p.rrf_score || "—"}</td>
+        <td>${p.cited_by ?? 0}</td><td>${p.chain_hits ?? 0}</td><td>${p.final_score ?? "—"}</td></tr>`).join("") + `</table>`;
+  if (injected.length) {
+    h += `<div class="section-title">🧠 LLM领域先验名单（规划Agent给出 → 标题反查 → 终选）</div>` +
+      injected.map(x => `<div>· ${x.hit ? "✅" : "❌"} 《${esc(x.t.slice(0, 48))}》→ ${x.hit ? "已入终选" : "反查未收录（标题有误会被如实拦截，不虚构收录）"}</div>`).join("");
+  }
+  if (exempt.length) {
+    h += `<div class="section-title">🛡 免检通道名单（共被引≥3，跳过LLM粗筛）</div>` +
+      exempt.map(p => `<div>· 《${esc((p.title || "").slice(0, 52))}》— 被 ${p.chain_hits} 篇种子共同引用</div>`).join("");
+  }
+  if (plan.keywords && plan.keywords.length) {
+    h += `<div class="section-title">🔑 检索关键词</div><div>${plan.keywords.map(k => `<span class="badge-sig">${esc(k)}</span>`).join("")}</div>`;
+  }
+  $("#sig-body").innerHTML = h;
+}
+function renderSortRow() {
+  const row = $("#sort-row");
+  row.innerHTML = SORTS.map((s, i) => `<button class="${i === searchSort ? "on" : ""}" data-i="${i}">${s}</button>`).join("");
+  row.querySelectorAll("button").forEach(b => b.onclick = () => { searchSort = +b.dataset.i; renderSortRow(); renderSearchList(); });
+}
+function renderSearchList() {
+  const meta = metaList();
+  $("#search-list").innerHTML = sortPapers(meta).map((p, i) => {
+    const badges = paperBadges(p).map(b => `<span class="badge-sig">${esc(b)}</span>`).join("");
+    const parts = `相关性 ${p.relevance_score ?? "免检"} · 被引 ${p.cited_by ?? 0} · 引用链 ${p.chain_hits ?? 0}` + (p.final_score ? ` · 综合分 ${p.final_score}` : "");
+    return `<details class="expander"><summary>${i + 1}. ${esc((p.title || "").slice(0, 70))} (${p.year || ""})${badges}</summary>
+      <div class="exp-body">[${esc(p.arxiv_id || "")}] ${esc(parts)}${p.pdf_url ? ` · <a href="${esc(p.pdf_url)}" target="_blank">arXiv原文</a>` : ""}
+      <div style="margin-top:6px">${esc((p.abstract || "无摘要").slice(0, 400))}${(p.abstract || "").length > 400 ? "…" : ""}</div></div></details>`;
+  }).join("");
+}
+
+/* ---- 标签: 信息卡片（声明 + 📎证据穿透） ---- */
+function renderCards() {
+  const cards = CUR.r.cards || [];
+  const el = $("#tab-cards");
+  el.innerHTML = cards.length ? cards.map(c => {
+    const body = (c.claims || []).map((cl, i) => {
+      EVLOOKUP[`${c.arxiv_id}#${i}`] = {content: cl.content, quotes: cl.quotes};
+      const quotes = (cl.quotes || []).map(q =>
+        `<div class="quote-blk"><span class="sec">${esc(q.section || "")}</span> ${esc(q.text)}</div>`).join("");
+      return `<div class="claim-item">
+        <span class="claim-type ${cl.claim_type || ""}">${CLAIM_TC[cl.claim_type] || "⚪ 其他"}</span>
+        <div class="claim-content">${esc(cl.content)}${quotes}</div>
+        <button class="mini-btn" onclick="showEvidence('${esc(c.arxiv_id)}',${i})">📎 证据</button></div>`;
+    }).join("");
+    return `<details class="expander"><summary>📁 ${esc(c.title)} [${esc(c.arxiv_id)}] (${c.year || ""}) — ${esc(c.method_category || "")}</summary>
+      <div class="exp-body">${body || "无声明"}</div></details>`;
+  }).join("") : '<div class="empty">无信息卡片数据（提取Agent未运行或快照缺失）</div>';
+}
+
+async function showEvidence(arxivId, idx) {
+  const info = EVLOOKUP[`${arxivId}#${idx}`] || {};
+  const mb = $("#modal-box");
+  mb.innerHTML = `<h3>📎 证据链穿透</h3><div style="font-size:13px;line-height:1.7;margin-bottom:8px"><b>声明</b>: ${esc(info.content || "")}</div><div class="empty">加载中…</div>`;
+  $("#modal").classList.remove("hidden");
+  let ev = {};
+  try { ev = await api(`/api/tasks/${CUR.tid}/evidence/${arxivId}/${idx}`); }
+  catch (e) { ev = {located: false, err: e.message}; }
+  const quotes = (info.quotes || []).map(q =>
+    `<div class="quote-blk"><span class="sec">${esc(q.section || "")}</span> ${esc(q.text)}</div>`).join("");
+  let h = `<h3>📎 证据链穿透</h3><div style="font-size:13px;line-height:1.7;margin-bottom:8px"><b>声明</b>: ${esc(info.content || "")}</div>`;
+  if (ev.err) h += `<div class="msg ai">加载失败: ${esc(ev.err)}</div>${quotes}`;
+  else if (!ev.located) h += `<div class="chat-hint">该声明无已定位证据（证据仅为核验通过的声明生成；或引用未能在PDF中定位，可能因文本截断或格式差异）</div>${quotes}`;
+  else {
+    h += `<div class="cap">出处: <b>${esc(ev.pdf || "")}</b> 第${ev.page}页 · 匹配级别: ${esc(ev.match_level || "?")}</div>`;
+    if (ev.image_url) h += `<img src="${ev.image_url}${pwq()}" alt="PDF高亮页"><div class="cap">PDF第${ev.page}页 · 黄色高亮=证据原文</div>`;
+    else if (ev.image_missing) h += `<div class="msg ai">⚠️ 证据图片缺失（服务器重启后 evidence/ 目录会清空）。可到「📚 论文原文」标签页打开该论文并跳到第 ${ev.page} 页核对原文。</div>`;
+    h += `<div class="section-title">引用原文</div>${quotes}`;
+  }
+  mb.innerHTML = h;
+}
+
+/* ---- 标签: 核验明细（两级核验 + Benchmark + 详情展开） ---- */
+function renderReview() {
+  const r = CUR.r;
+  const revRows = Array.isArray(r.review) ? r.review : [];
+  let html = "";
+  if (r.benchmark && r.benchmark.verdict_accuracy != null) {
+    const b = r.benchmark;
+    const pf = b.precision || {}, rc = b.recall || {}, f1 = b.f1 || {};
+    const stat = (v, k) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`;
+    html += `<details class="expander" open><summary>🧪 固定Benchmark评测结果（审查器离线质量）</summary><div class="exp-body">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:10px">
+        ${stat((b.verdict_accuracy * 100).toFixed(1) + "%", "Verdict Accuracy")}
+        ${stat((b.macro_f1 || 0).toFixed(3), "Macro-F1")}
+        ${stat(((b.false_pass_rate || 0) * 100).toFixed(1) + "%", "误放行率")}
+        ${stat(b.total_cases ?? "—", "样本数")}</div>
+      <table class="rev-table"><tr><th>类别</th><th>Precision</th><th>Recall</th><th>F1</th></tr>
+      ${["supported", "unsupported", "contradicted"].map(k =>
+        `<tr><td>${k}</td><td>${(pf[k] ?? 0).toFixed(3)}</td><td>${(rc[k] ?? 0).toFixed(3)}</td><td>${(f1[k] ?? 0).toFixed(3)}</td></tr>`).join("")}
+      </table></div></details>`;
+  }
+  html += `<div class="chat-hint">第1级: 程序化引用对齐(抓伪造引用) · 第2级: LLM原子事实核验(抓夸大/曲解,证据不足时暂缓)。点击「详情」展开判定理由/原子事实/引用定位。</div>`;
+  if (revRows.length && revRows[0] && revRows[0].claim_content !== undefined) {
+    const VC = {supported: ["支持", "ok"], unsupported: ["不支持", "bad"],
+                contradicted: ["矛盾", "bad"], abstained: ["暂缓", "warn"]};
+    html += `<table class="rev-table"><tr>
+        <th style="width:46%">声明</th><th>引用对齐</th><th>语义裁决</th><th>最终结论</th></tr>` +
+      revRows.slice(0, 100).map(v => {
+        const sem = (v.verdict && v.verdict.verdict) || "abstained";
+        const [label, cls] = VC[sem] || [sem, "warn"];
+        const fin = v.hallucination ? ["幻觉·剔除", "bad"]
+          : (sem === "supported" && v.quote_alignment ? ["可信", "ok"] : ["暂缓/不计", "warn"]);
+        const det = [];
+        if (v.verdict && v.verdict.reason) det.push(`<b>判定理由</b>: ${esc(v.verdict.reason)}`);
+        (v.atomic_facts || []).forEach(f => {
+          const ic = {supported: "✅", unsupported: "❌", contradicted: "⚔️", abstained: "⏸️"}[f.verdict] || "•";
+          det.push(`${ic} <code>${f.verdict}</code> ${esc((f.fact || "").slice(0, 80))} — ${esc((f.reason || "").slice(0, 60))}`);
+        });
+        (v.quote_details || []).forEach(d => {
+          det.push(d.aligned
+            ? `✓ 置信度${(d.confidence ?? 0).toFixed(2)} · 第${(d.page ?? 0) + 1}页 · 命中片段: <code>${esc((d.matched_fragment || "").slice(0, 80))}</code>`
+            : `✗ <code>${esc(d.section || "")}</code> 引用未能在原文定位`);
+        });
+        if ((v.review_status || "ok") === "llm_error") det.push("⚠️ 该声明语义核验调用失败，不计入幻觉，重跑流水线可补判");
+        const detHtml = det.length ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--brand);font-size:11.5px">详情 (${det.length})</summary>
+          <div style="font-size:11.5px;color:var(--slate);line-height:1.7;margin-top:4px">${det.map(d => `<div>· ${d}</div>`).join("")}</div></details>` : "";
+        const fm = v.failure_mode && v.failure_mode !== "none"
+          ? `<div style="color:var(--muted);font-size:11px;margin-top:2px">失败模式: ${esc(v.failure_mode)}</div>` : "";
+        return `<tr><td>${esc(v.claim_content || "")}${fm}${detHtml}</td>
+          <td>${v.quote_alignment ? "✓" : "✗"} ${v.aligned_quote_count ?? ""}/${v.quote_count ?? ""}</td>
+          <td><span class="pill ${cls}">${label}</span></td>
+          <td><span class="pill ${fin[1]}">${fin[0]}</span></td></tr>`;
+      }).join("") + `</table>`;
+  } else html += '<div class="empty">无核验明细</div>';
+  $("#tab-review").innerHTML = html;
+}
+
+/* ---- 标签: 可信问答（Evidence-Bounded QA + 声明池 + 拒答自检） ---- */
+function renderQa() {
+  if (qaInited) return;
+  qaInited = true;
+  $("#tab-qa").innerHTML = `
+    <div class="chat-hint">只基于已通过两级核验的声明池回答，证据不足时明确拒答——宁可拒答，不可编造。</div>
+    <div class="chat" id="qa-chat"></div>
+    <div class="chat-input"><input id="qa-in" placeholder="问点什么…（如: 某方法在XX数据集上的表现如何？）">
+      <button class="act-btn" id="qa-go">发送</button></div>
+    <div class="chat-hint">💡 回答基于声明池（右侧下方），每句标注 [声明#N] 来源。</div>
+    <div class="pool-box" id="qa-pool"><div class="chat-hint">声明池加载中…</div></div>
+    <div class="tool-row"><button class="act-btn ghost" id="btn-refusal">🧪 拒答能力自检（约14个问题，1-3分钟）</button></div>
+    <div class="gen-box hidden" id="refusal-box"></div>`;
+  $("#qa-go").onclick = qaSend;
+  $("#qa-in").addEventListener("keydown", e => { if (e.key === "Enter") qaSend(); });
+  $("#btn-refusal").onclick = refusalTest;
+}
+async function loadPool() {
+  if (qaPoolLoaded) { renderPool(); return; }
+  qaPoolLoaded = true;
+  try {
+    qaPool = (await api(`/api/tasks/${CUR.tid}/pool`)).pool;
+  } catch (e) { qaPool = null; qaPoolErr = e.message; }
+  renderPool();
+}
+let qaPoolErr = null;
+function renderPool() {
+  const el = $("#qa-pool");
+  if (!el) return;
+  if (qaPoolErr) { el.innerHTML = `<div class="chat-hint">声明池加载失败: ${esc(qaPoolErr)}（有任务运行时请等其结束）</div>`; return; }
+  if (!qaPool || !qaPool.length) { el.innerHTML = '<div class="chat-hint">声明池为空，请先运行完整流水线</div>'; return; }
+  el.innerHTML = `<b style="font-size:12.5px">📚 当前声明池（问答的知识边界，共${qaPool.length}条）</b>` +
+    qaPool.map(c => `<div class="pc">${CLAIM_TC[c.type] || "⚪"} <b>[#${c.num}]</b> ${esc(c.content.slice(0, 80))}${c.content.length > 80 ? "…" : ""}
+      ${typeof c.confidence === "number" ? ` · 置信度${c.confidence.toFixed(2)}` : ""}<br><span class="eid">🆔 ${esc(c.evidence_id)}</span></div>`).join("");
+}
+async function qaSend() {
+  const inp = $("#qa-in");
+  const q = inp.value.trim();
+  if (!q || !CUR) return;
+  inp.value = "";
+  qaHistory.push({role: "user", content: q});
+  appendMsg("qa", "user", q);
+  const m = appendMsg("qa", "ai", "⏳ 检索声明池并生成有据回答…");
+  try {
+    const r = await api(`/api/tasks/${CUR.tid}/qa`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({question: q, history: qaHistory.slice(0, -1)})});
+    let body = r.answer;
+    if (!r.can_answer) body = `⚠️ ${r.answer}\n\n**缺失的证据**: ${r.missing}`;
+    const t = m.querySelector(".t");
+    t.innerHTML = marked.parse(body);
+    if (r.used_claims && r.used_claims.length) {
+      const byNum = {};
+      (r.pool || []).forEach(c => byNum[c.num] = c);
+      t.insertAdjacentHTML("beforeend", `<div class="src">依据: 声明 ${r.used_claims.join(", ")}</div>`);
+      r.used_claims.forEach(n => {
+        const c = byNum[n];
+        if (c) t.insertAdjacentHTML("beforeend",
+          `<div class="quote-blk"><span class="sec">[声明#${n}] ${esc(c.paper_title || "")}</span> ${esc(c.content)}${c.quote ? `<br>引用: ${esc(c.quote)}` : ""}${c.page != null ? ` · PDF第${c.page + 1}页` : ""}</div>`);
+      });
+    }
+    qaHistory.push({role: "assistant", content: body});
+  } catch (e) { m.querySelector(".t").textContent = "问答失败: " + e.message; }
+}
+async function refusalTest() {
+  const btn = $("#btn-refusal"), box = $("#refusal-box");
+  btn.disabled = true;
+  box.classList.remove("hidden");
+  const lines = [];
+  let final = null, buf = "";
+  const stat2 = (v, k) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`;
+  try {
+    await streamText(`/api/tasks/${CUR.tid}/refusal-test`, {}, chunk => {
+      buf += chunk;
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        let d; try { d = JSON.parse(line); } catch (e) { continue; }
+        if (d.type === "case") {
+          lines.push(`<div>${d.correct ? "✓" : "✗"} ${d.expect_answerable ? "应答" : "应拒"}→${d.actual_answerable ? "答了" : "拒答"} | ${esc(d.question)}
+            <div class="chat-hint">${esc(d.answer_preview)}</div></div>`);
+          box.innerHTML = `<div class="chat-hint">测试进行中…（已完成 ${lines.length} 题）</div>` + lines.join("");
+        } else if (d.type === "final") final = d;
+        else if (d.type === "error") box.innerHTML = esc(d.msg);
+      }
+    });
+    if (final) box.innerHTML =
+      `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        ${stat2((final.answerable_acc * 100).toFixed(0) + "%", "可答组正确率")}
+        ${stat2((final.refusal_acc * 100).toFixed(0) + "%", "拒答组正确率")}</div>` + lines.join("");
+  } catch (e) { box.innerHTML = "测试失败: " + esc(e.message); }
+  btn.disabled = false;
+}
+
+/* ---- 标签: AI助手（系统使用 + 论文内容，流式） ---- */
+function renderAssist() {
+  if (assistInited) return;
+  assistInited = true;
+  $("#tab-assist").innerHTML = `
+    <div class="chat-hint">关于<b>本系统怎么用</b>、关于<b>当前检索的论文内容</b>，都可以直接问。论文内容类回答仅使用已核验的信息。</div>
+    <div class="chat" id="assist-chat"></div>
+    <div class="chat-input"><input id="assist-in" placeholder="问系统使用或论文内容的任何问题…">
+      <button class="act-btn" id="assist-go">发送</button></div>
+    <div class="chat-hint">💡 例如: "这套系统怎么保证不说谎？" / "帮我讲讲XX方法的效果" / "第3篇论文的贡献是什么？"</div>`;
+  $("#assist-go").onclick = assistSend;
+  $("#assist-in").addEventListener("keydown", e => { if (e.key === "Enter") assistSend(); });
+}
+async function assistSend() {
+  const inp = $("#assist-in");
+  const q = inp.value.trim();
+  if (!q) return;
+  inp.value = "";
+  assistHistory.push({role: "user", content: q});
+  appendMsg("assist", "user", q);
+  const m = appendMsg("assist", "ai", "");
+  const t = m.querySelector(".t");
+  let buf = "";
+  try {
+    await streamText("/api/assistant",
+      {history: assistHistory.slice(), tid: CUR ? CUR.tid : ""},
+      c => { buf += c; t.innerHTML = marked.parse(buf); scrollChat("assist"); });
+    assistHistory.push({role: "assistant", content: buf});
+  } catch (e) { t.textContent = "失败: " + e.message; }
+}
+
+function appendMsg(tab, role, text) {
+  const box = $("#" + tab + "-chat");
+  const m = document.createElement("div");
+  m.className = "msg " + (role === "user" ? "user" : "ai");
+  m.innerHTML = '<div class="t"></div>';
+  if (role === "user") m.querySelector(".t").textContent = text;
+  else m.querySelector(".t").innerHTML = marked.parse(text || "");
+  box.appendChild(m);
+  scrollChat(tab);
+  return m;
+}
+function scrollChat(tab) {
+  const tb = $("#tab-" + tab);
+  if (tb) tb.scrollTop = tb.scrollHeight;
+}
+
+/* ---- 流式 POST 帮手（fetch + ReadableStream，支持401重试） ---- */
+async function streamText(path, body, onChunk) {
+  const r = await fetch(path, {method: "POST",
+    headers: {"Content-Type": "application/json", "X-App-Password": pw},
+    body: JSON.stringify(body || {})});
+  if (r.status === 401) {
+    const v = prompt("请输入访问密码");
+    if (v === null) throw new Error("需要访问密码");
+    pw = v; localStorage.setItem("pw", v);
+    return streamText(path, body, onChunk);
+  }
+  if (!r.ok) {
+    let m = r.status;
+    try { m = (await r.json()).detail || m; } catch (e) {}
+    throw new Error(m);
+  }
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  for (;;) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    onChunk(dec.decode(value, {stream: true}));
+  }
+}
+
+/* ---- 标签: 综述总结（叙述性综述 + AI观点，流式生成） ---- */
+function renderSurvey() {
+  const r = CUR.r;
+  const has = r.survey_md || surveyText;
+  $("#tab-survey").innerHTML = `
+    <div class="tool-row">
+      <button class="act-btn" id="btn-survey">${r.survey_md ? "🔄 重新生成" : "✍️ 生成综述总结"}</button>
+      ${has ? '<button class="act-btn ghost" id="btn-sv-dl">⬇️ 下载 (Markdown)</button>' : ""}
+    </div>
+    <div class="chat-hint">📖 <b>叙述性综述</b>: 把检索到的论文串成连贯的研究故事 · 💡 <b>AI观点</b>: 跨论文归纳推断（仅供参考，非论文原文结论）。生成约1-3分钟，请停留在本页。</div>
+    <div id="survey-box" class="gen-box">${r.survey_md ? `<div class="md">${marked.parse(r.survey_md)}</div>` : '<div class="empty">尚无综述总结——点击上方按钮基于当前检索到的论文生成</div>'}</div>`;
+  $("#btn-survey").onclick = genSurvey;
+  const dl = $("#btn-sv-dl");
+  if (dl) dl.onclick = () => downloadText("survey_summary.md", surveyText || CUR.r.survey_md);
+}
+async function genSurvey() {
+  const box = $("#survey-box"), btn = $("#btn-survey");
+  btn.disabled = true;
+  surveyText = "";
+  box.innerHTML = '<div class="chat-hint">⏳ 正在生成… 下方文字逐步出现（约1-3分钟）</div>';
+  try {
+    await streamText(`/api/tasks/${CUR.tid}/survey`, {}, c => {
+      surveyText += c;
+      box.innerHTML = `<div class="md">${marked.parse(surveyText)}</div>`;
+    });
+    box.insertAdjacentHTML("beforeend", '<div class="chat-hint">✅ 已生成并保存到任务快照（survey_summary.md）</div>');
+  } catch (e) { box.innerHTML = `生成失败: ${esc(e.message)}`; }
+  btn.disabled = false;
+}
+
+/* ---- 标签: 矛盾与张力 ---- */
+function renderConflicts() {
+  const conflicts = CUR.r.conflicts || [];
   const confSide = (x, cls) => {
     if (!x || typeof x !== "object") return "";
     return `<div class="conf-side ${cls}">
       <div class="conf-paper">${esc(x.paper_title || "")}<span>${x.year || ""}</span></div>
-      <div class="conf-content">${esc(x.content || x.quote || "")}</div>
-    </div>`;
+      <div class="conf-content">${esc(x.content || x.quote || "")}</div></div>`;
   };
   $("#tab-conflicts").innerHTML = conflicts.length ? conflicts.map(c => {
     if (typeof c === "string")
@@ -550,63 +1121,306 @@ async function showResult(id, t) {
       ${fallback}
       ${c.explanation ? `<div class="conf-expl">${esc(c.explanation)}</div>` : ""}
     </div>`;
-  }).join("") : `<div class="empty">未发现矛盾/张力（或该任务未运行矛盾检测）</div>`;
-
-  // 统计条
-  const revRows = Array.isArray(r.review) ? r.review
-    : (r.review && Array.isArray(r.review.results) ? r.review.results : []);
-  if (papers.length || revRows.length) {
-    const total = revRows.length;
-    const okN = revRows.filter(v => v && !v.hallucination &&
-      v.quote_alignment && v.verdict && v.verdict.verdict === "supported").length;
-    const halluN = revRows.filter(v => v && v.hallucination).length;
-    const stat = (v, k, cls) => `<div class="stat"><div class="v ${cls || ""}">${v}</div><div class="k">${k}</div></div>`;
-    const sr = $("#stat-row");
-    sr.innerHTML =
-      stat(papers.length, "收录论文") +
-      (total ? stat(total, "声明总数") + stat(okN, "可信声明") +
-        stat(halluN, "剔除幻觉", halluN ? "bad" : "") +
-        (t.hallucination_rate != null ? stat((t.hallucination_rate * 100).toFixed(1) + "%", "幻觉率",
-          t.hallucination_rate <= 0.12 ? "" : "bad") : "")
-        : "");
-    sr.classList.remove("hidden");
-  }
-  // 核验：结构化表格（声明 | 引用对齐 | 语义裁决 | 结论），兜底 markdown
-  if (r.review_table) {
-    $("#tab-review").innerHTML = `<div class="md">${marked.parse(r.review_table)}</div>`;
-  } else if (revRows.length && revRows[0] && revRows[0].claim_content !== undefined) {
-    const VC = { supported: ["支持", "ok"], unsupported: ["不支持", "bad"],
-                 contradicted: ["矛盾", "bad"], abstained: ["暂缓", "warn"] };
-    $("#tab-review").innerHTML = `<table class="rev-table"><tr>
-        <th style="width:46%">声明</th><th>引用对齐</th><th>语义裁决</th><th>最终结论</th></tr>` +
-      revRows.slice(0, 100).map(v => {
-        const sem = (v.verdict && v.verdict.verdict) || "abstained";
-        const [label, cls] = VC[sem] || [sem, "warn"];
-        const fin = v.hallucination ? ["幻觉·剔除", "bad"]
-          : (sem === "supported" && v.quote_alignment ? ["可信", "ok"] : ["暂缓/不计", "warn"]);
-        const fm = v.failure_mode && v.failure_mode !== "none"
-          ? `<div style="color:var(--muted);font-size:11px;margin-top:2px">失败模式: ${esc(v.failure_mode)}</div>` : "";
-        return `<tr>
-          <td>${esc(v.claim_content || "")}${fm}</td>
-          <td>${v.quote_alignment ? "✓" : "✗"} ${v.aligned_quote_count ?? ""}/${v.quote_count ?? ""}</td>
-          <td><span class="pill ${cls}">${label}</span></td>
-          <td><span class="pill ${fin[1]}">${fin[0]}</span></td></tr>`;
-      }).join("") + `</table>`;
-  } else {
-    $("#tab-review").innerHTML = `<div class="empty">无核验明细</div>`;
-  }
-  // 图谱
-  $("#tab-graph").innerHTML =
-    `<iframe src="/api/tasks/${id}/graph${pw ? "?pw=" + encodeURIComponent(pw) : ""}"></iframe>`;
+  }).join("") : '<div class="empty">未发现矛盾/张力（论文主题较分散时属正常；或该任务未运行矛盾检测）</div>';
 }
 
-/* tabs 切换 */
+/* ---- 标签: 综述表格 / 引用图谱 / 新手指南 ---- */
+function renderTable() {
+  $("#tab-table").innerHTML = CUR.r.review_table
+    ? `<div class="md">${marked.parse(CUR.r.review_table)}</div>`
+    : '<div class="empty">综述表格未生成</div>';
+}
+function renderGraph() {
+  $("#tab-graph").innerHTML = CUR.r.report || CUR.r.papers
+    ? `<iframe src="/api/tasks/${CUR.tid}/graph${pwq()}"></iframe>`
+    : "";
+}
+const GUIDE_MD = `## 欢迎使用本系统 —— 3分钟看懂它是做什么的
+
+> **一句话介绍**: 你输入一个研究主题，系统自动帮你检索论文、精读内容、核实每一条信息，最后产出一份「每句话都有原文出处」的文献综述。你可以把它理解为 **一支不会说谎的AI科研助理团队**。
+
+### 🧠 这支AI团队是怎么分工的？（五个Agent = 五个员工）
+
+| 员工 | 干什么 | 生活化类比 |
+|---|---|---|
+| 🧠 **规划Agent** | 把你的主题翻译成多组英文检索词和筛选标准 | 会做调研提纲的**课题组长** |
+| 🔍 **检索Agent** | 去论文库里找论文，下载PDF，并按"经典+相关"排序 | 熟门熟路的**图书管理员** |
+| 📄 **提取Agent** | 精读每篇PDF，摘出"声明"并附上原文引用 | 做读书笔记的**秘书** |
+| ✅ **审查Agent** | 逐条核对：引用是真是假？有没有夸大？ | 较真的**事实核查编辑** |
+| 📝 **综合Agent** | 只用通过核验的内容写综述报告 | 不添油加醋的**撰稿人** |
+
+**为什么这样设计？** 大模型直接写综述会"一本正经地胡说八道"（业内叫**幻觉**）。本系统的对策：提取的每条信息都必须附带论文原文引用，再经过程序+AI双重核查，所以报告里的关键结论**可以点击📎按钮跳转到PDF原文高亮处验证**。
+
+### 🗺️ 标签页导读
+
+1. **📝 综述报告** — 综述正文。看不懂？点"🍼 生成小白解读"，系统会把报告转写成通俗易懂的版本；还支持 Markdown / Word / LaTeX 三格式导出。
+2. **🔍 检索结果** — 系统找到了哪些论文？为什么这篇排前面？徽章含义：\`🔗引用链经典\`=被多篇论文共同引用的奠基之作；\`🔥高被引\`=学术界公认有影响力；\`🤖高度切题\`=与你的主题最匹配。可展开"四路信号召回分解"看透明化打分。
+3. **💬 可信问答** — 直接用中文提问！系统只根据已核验的内容回答，**证据不够时宁可拒绝回答也不编造**——这是和普通AI对话最大的区别。
+4. **🤖 AI助手** — 任何疑问直接问：系统怎么用、指标什么含义、论文里某个方法的效果，它都能答。
+5. **📚 综述总结** — 叙述性综述（研究故事）+ AI观点（按"现有XX方法在XX场景具备XX优势，但普遍存在XX局限…"句式归纳研究缺口，适合找选题，仅供参考）。
+6. **📄 信息卡片** — 每篇论文被拆成了哪些知识点（声明）？🔵=方法、🟢=实验结果、🟠=局限性说明；每条声明旁有📎证据可跳PDF原文。
+7. **✅ 核验明细** — 哪些声明通过了核实？哪些被剔除、为什么？（被剔除≠论文差，只是那条表述与原文对不上）附Benchmark评测。
+8. **⚡ 矛盾与张力** — 论文之间打架了？🔴=正面对立，🟡=表面冲突（实验条件不同导致的）。
+9. **📊 综述表格** — 各论文的方法横向对比表。
+10. **🕸 引用图谱** — 论文之间谁引用谁的关系网（可拖拽交互）。
+11. **📚 论文原文** — 网页内直接阅读PDF全文，含 🔍 全文搜索（跨所有本地论文）、📝 阅读笔记、📖 核心名词速查。
+12. **⚔️ 对比阅读** — 挑两篇论文并排对比：背景/方法/结论/争议点一屏看清。
+
+### 🎯 检索模式
+
+- 📌 **标准**（推荐）: 规划Agent分解主题 → 多组关键词检索 → 四路信号加权排序。
+- 🌱 **入门综述**: 经典综述优先，零基础也能懂。
+- 🚀 **前沿突破**: 近1-5年顶刊顶会最新成果，按时间+影响力排序。
+- 🔀 **交叉领域**: S2+OpenAlex+arXiv多库互补，组合词精准定位跨学科研究。
+
+模式未命中自动降级为标准检索继续；命中文献照常进入提取→审查→综合全流程，并为命中论文生成核心名词速查表（在「论文原文」页可查）。
+
+### 📚 术语速查表
+
+| 术语 | 通俗解释 |
+|---|---|
+| **声明 (Claim)** | 从论文里摘出的一条可核实的信息，如"该方法在CIFAR-10上达到95%准确率" |
+| **原文引用 (Quote)** | 支撑该声明的论文原话（逐字摘录，不许改写） |
+| **引用对齐** | 程序检查：声明的"原文引用"是否真的出现在PDF里 → 抓**伪造引用** |
+| **语义核验** | AI检查：引用虽真实，但有没有断章取义/夸大 → 抓**曲解原文** |
+| **幻觉率** | 被剔除声明占总声明的比例，即"AI胡说占比"，本系统全程量化它 |
+| **证据链穿透** | 点击📎直达PDF原文高亮位置，眼见为实 |
+| **RRF共识** | 多个检索角度都命中的论文排前面（多个证据源一致=更可信） |
+| **引用链/共被引** | 被多篇种子论文的参考文献共同引用=领域公认经典 |
+| **免检通道** | 共被引≥3的经典跳过AI粗筛（学术界共识比AI一次性打分更可靠） |
+| **矛盾 vs 张力** | 矛盾=结论正面对立；张力=表面冲突，细看是实验条件不同 |
+| **arXiv编号** | 论文在arXiv预印本库的身份证号，如 2401.12345 |
+
+### 🚀 最短上手路径（三步）
+
+1. 左侧输入主题（**写具体些**，如"脉冲神经网络的高效训练方法"而不是"神经网络"）→ 点 **开始综述**
+2. 等待10-15分钟（系统在检索+精读+核查，日志会显示进度）
+3. 先看 **📝 综述报告**（可点"🍼 生成小白解读"），有疑问去 **💬 可信问答** 直接提问`;
+function renderGuide() {
+  $("#tab-guide").innerHTML = `<div class="md">${marked.parse(GUIDE_MD)}</div>`;
+}
+
+/* ---- 标签: 论文原文（PDF阅读 + 全文搜索 + 笔记 + 名词速查） ---- */
+let readerId = null, readerInited = false;
+async function renderReader() {
+  const el = $("#tab-reader");
+  el.innerHTML = '<div class="empty">加载中…</div>';
+  let ids = [];
+  try { ids = (await api("/api/pdfs")).ids || []; } catch (e) {}
+  if (!ids.length) {
+    el.innerHTML = '<div class="empty">papers/ 目录下没有PDF（容器重启后磁盘会清空，重新运行一次流水线即可）</div>';
+    readerInited = false;
+    return;
+  }
+  const meta = metaList();
+  const retrieved = meta.filter(p => ids.includes(p.arxiv_id));
+  const others = ids.filter(i => !retrieved.some(p => p.arxiv_id === i));
+  const gloss = CUR.r.glossary && CUR.r.glossary.md ? CUR.r.glossary : null;
+  const opts = retrieved.map((p, i) =>
+      `<option value="${esc(p.arxiv_id)}">${i + 1}. ${esc((p.title || "").slice(0, 48))} (${p.year || ""}) [${esc(p.arxiv_id)}]</option>`).join("")
+    + others.map(i => `<option value="${esc(i)}">📖 其他本地PDF [${esc(i)}]</option>`).join("");
+  el.innerHTML = `
+    <div class="chat-hint">流水线下载的PDF全文可在此阅读。想核对系统声明的原文出处时用这里（📎证据会给出页码）。</div>
+    <details class="expander" id="ps-exp"><summary>🔍 PDF全文搜索（跨所有本地论文，多词=同页同时出现）</summary>
+      <div class="exp-body">
+        <div class="tool-row"><input type="text" id="ps-q" placeholder="如: surrogate gradient / 脉冲 训练">
+          <button class="act-btn" id="ps-go">🔍 搜索</button></div>
+        <div id="ps-out"></div>
+      </div></details>
+    <div class="tool-row">
+      <select id="reader-sel" style="flex:1">${opts}</select>
+      <a class="act-btn ghost" id="reader-dl" href="#" download>⬇️ 下载该PDF</a>
+    </div>
+    <div class="reader-grid">
+      <div>
+        <div id="reader-meta" class="chat-hint"></div>
+        <iframe id="reader-frame" src=""></iframe>
+        <div class="section-title">📝 阅读笔记（保存在浏览器本地，绑定论文+页码）</div>
+        <div class="tool-row">
+          <input id="note-page" type="number" min="1" style="width:70px" placeholder="页码" value="1">
+          <input type="text" id="note-quote" placeholder="选中段落（可从PDF复制，可留空）" style="flex:1">
+        </div>
+        <div class="tool-row">
+          <input type="text" id="note-text" placeholder="批注内容" style="flex:1">
+          <button class="act-btn" id="note-save">💾 保存笔记</button>
+        </div>
+        <div id="note-list"></div>
+      </div>
+      <div>
+        ${gloss ? `<details class="expander" open><summary>📖 核心名词速查${gloss.topic ? `（${esc((gloss.topic || "").slice(0, 24))}）` : ""}</summary>
+          <div class="exp-body"><div class="md">${marked.parse(gloss.md)}</div></div></details>`
+        : '<div class="chat-hint">（本次检索未生成名词速查表——三模式检索时会自动生成）</div>'}
+      </div>
+    </div>`;
+  readerInited = true;
+  readerId = retrieved.length ? retrieved[0].arxiv_id : ids[0];
+  $("#reader-sel").value = readerId;
+  $("#reader-sel").onchange = () => { readerId = $("#reader-sel").value; updateReader(); };
+  $("#ps-go").onclick = pdfSearch;
+  $("#ps-q").addEventListener("keydown", e => { if (e.key === "Enter") pdfSearch(); });
+  $("#note-save").onclick = saveNote;
+  updateReader();
+}
+function getNotes(id) {
+  try { return (JSON.parse(localStorage.getItem("notes_v1") || "{}")[id]) || []; }
+  catch (e) { return []; }
+}
+function setNotes(id, arr) {
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem("notes_v1") || "{}"); } catch (e) {}
+  all[id] = arr;
+  localStorage.setItem("notes_v1", JSON.stringify(all));
+}
+function updateReader() {
+  if (!readerId) return;
+  const meta = metaList().find(p => p.arxiv_id === readerId);
+  $("#reader-frame").src = `/api/pdf/${readerId}`;
+  $("#reader-dl").href = `/api/pdf/${readerId}`;
+  $("#reader-meta").innerHTML = meta
+    ? `<b>${esc(meta.title)}</b> · ${meta.year || "年份不详"} · 被引 ${meta.cited_by ?? 0} · arXiv:${esc(readerId)}`
+    : `arXiv:${esc(readerId)}`;
+  renderNotes();
+}
+function renderNotes() {
+  const notes = getNotes(readerId).sort((a, b) => a.page - b.page);
+  $("#note-list").innerHTML = notes.length ? notes.map((n, i) =>
+    `<div class="note-item"><span class="np">💬 第${n.page + 1}页</span>
+      ${n.quote ? `<div class="nq">「${esc(n.quote.slice(0, 160))}」</div>` : ""}
+      ${esc(n.note || "")}
+      <div style="margin-top:4px"><button class="mini-btn" data-del="${i}">🗑 删除</button></div></div>`).join("")
+    : '<div class="chat-hint">暂无笔记。阅读时在上方填写并保存。</div>';
+  $("#note-list").querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
+    const arr = getNotes(readerId);
+    arr.splice(+b.dataset.del, 1);
+    setNotes(readerId, arr);
+    renderNotes();
+  });
+}
+function saveNote() {
+  const page = Math.max(1, +$("#note-page").value || 1);
+  const quote = $("#note-quote").value.trim();
+  const note = $("#note-text").value.trim();
+  if (!note && !quote) return toast("请填写批注内容或选中段落");
+  const arr = getNotes(readerId);
+  arr.push({page: page - 1, quote, note, ts: Date.now()});
+  setNotes(readerId, arr);
+  $("#note-quote").value = ""; $("#note-text").value = "";
+  renderNotes();
+  toast("✅ 笔记已保存");
+}
+async function pdfSearch() {
+  const q = $("#ps-q").value.trim();
+  const out = $("#ps-out");
+  if (!q) return;
+  out.innerHTML = '<div class="chat-hint">搜索中…（逐页解析所有PDF）</div>';
+  try {
+    const r = await api(`/api/search-pdfs?q=${encodeURIComponent(q)}&tid=${CUR.tid}`);
+    if (!r.hits.length) { out.innerHTML = `<div class="chat-hint">没有找到与「${esc(q)}」匹配的内容</div>`; return; }
+    out.innerHTML = `<div class="chat-hint">命中 ${r.hits.length} 处 · 跨 ${r.total_docs} 篇论文</div>` +
+      r.hits.map(h => `<details class="expander"><summary>《${esc((h.title || "").slice(0, 52))}》· 第${h.page + 1}页 · 该文命中${h.doc_hits}页</summary>
+        <div class="exp-body">
+          <div>…${esc(h.snippet)}…</div>
+          <div class="tool-row">
+            <button class="mini-btn" onclick="jumpPage('${esc(h.arxiv_id)}',${h.page + 1})">📄 跳转原文页</button>
+            <button class="mini-btn" onclick="quoteNote('${esc(h.arxiv_id)}',${h.page + 1},'${encodeURIComponent(h.snippet)}')">📝 引用此段做笔记</button>
+          </div>
+        </div></details>`).join("");
+  } catch (e) { out.innerHTML = `<div class="chat-hint">搜索失败: ${esc(e.message)}</div>`; }
+}
+function jumpPage(id, page) {
+  $("#reader-sel").value = id;
+  readerId = id;
+  updateReader();
+  $("#reader-frame").src = `/api/pdf/${id}#page=${page}`;
+  toast(`已跳转《${id}》第 ${page} 页`);
+}
+function quoteNote(id, page, snippet) {
+  $("#note-page").value = page;
+  $("#note-quote").value = decodeURIComponent(snippet);
+  jumpPage(id, page);
+}
+
+/* ---- 标签: 对比阅读（双文献并排卡片） ---- */
+function renderCompare() {
+  const meta = metaList();
+  const el = $("#tab-compare");
+  if (meta.length < 2) {
+    el.innerHTML = '<div class="empty">论文数据不足2篇，无法对比（需完整运行流水线生成信息卡片）</div>';
+    return;
+  }
+  el.innerHTML = `
+    <div class="chat-hint">任选两篇论文并排对比<b>背景 / 方法 / 结论 / 争议点</b>。信息来自已核验的声明卡片。</div>
+    <div class="tool-row">
+      <select id="cmp-a" style="flex:1"></select>
+      <select id="cmp-b" style="flex:1"></select>
+    </div>
+    <div id="cmp-body"></div>`;
+  const opts = meta.map((p, i) => `<option value="${esc(p.arxiv_id)}">${esc((p.title || "").slice(0, 50))} [${esc(p.arxiv_id)}]</option>`).join("");
+  $("#cmp-a").innerHTML = opts;
+  $("#cmp-b").innerHTML = opts;
+  $("#cmp-b").selectedIndex = 1;
+  $("#cmp-a").onchange = renderCmpBody;
+  $("#cmp-b").onchange = renderCmpBody;
+  renderCmpBody();
+}
+function cmpCard(prof) {
+  const claimOf = (t) => (prof.card?.claims || []).filter(c => c.claim_type === t)
+    .map(c => `· ${esc(c.content.slice(0, 150))}`).join("<br>") || "—";
+  return `<div class="cmp-card">
+    <h3>📄 ${esc((prof.p.title || "").slice(0, 48))}</h3>
+    <div class="cm">arXiv:${esc(prof.p.arxiv_id)} · ${prof.p.year || ""} · 被引 ${prof.p.cited_by ?? 0}${prof.p.authors && prof.p.authors.length ? ` · ${esc(prof.p.authors.slice(0, 3).join(", "))}` : ""}</div>
+    <div class="section-title">🧭 背景（摘要）</div>
+    <div style="font-size:12.5px;line-height:1.7">${esc((prof.p.abstract || "无摘要").slice(0, 300))}${(prof.p.abstract || "").length > 300 ? "…" : ""}</div>
+    <div class="section-title">🔧 方法（已核验声明）</div><div style="font-size:12.5px;line-height:1.8">${claimOf("method")}</div>
+    <div class="section-title">🎯 结论</div><div style="font-size:12.5px;line-height:1.8">${claimOf("result")}</div>
+    <div class="section-title">⚠️ 局限性</div><div style="font-size:12.5px;line-height:1.8">${claimOf("limitation")}</div>
+  </div>`;
+}
+function renderCmpBody() {
+  const meta = metaList();
+  const pa = meta.find(p => p.arxiv_id === $("#cmp-a").value);
+  const pb = meta.find(p => p.arxiv_id === $("#cmp-b").value);
+  const body = $("#cmp-body");
+  if (!pa || !pb) return;
+  if (pa.arxiv_id === pb.arxiv_id) { body.innerHTML = '<div class="chat-hint">请选择两篇不同的论文</div>'; return; }
+  const ca = (CUR.r.cards || []).find(c => c.arxiv_id === pa.arxiv_id);
+  const cb = (CUR.r.cards || []).find(c => c.arxiv_id === pb.arxiv_id);
+  const pair = (CUR.r.conflicts || []).filter(c => {
+    const ids = [c.a && c.a.arxiv_id, c.b && c.b.arxiv_id];
+    return ids.includes(pa.arxiv_id) && ids.includes(pb.arxiv_id);
+  });
+  let h = `<div class="cmp-grid">${cmpCard({p: pa, card: ca})}${cmpCard({p: pb, card: cb})}</div>`;
+  h += `<div class="section-title">⚡ 两篇之间的争议点</div>`;
+  if (pair.length) {
+    h += pair.map(pc => {
+      const rel = pc.relation === "contradict";
+      return `<div class="conf-card">
+        <div class="conf-head"><span class="pill ${rel ? "bad" : "warn"}">${rel ? "🔴 直接矛盾" : "🟡 学术张力"}</span>
+        <span class="conf-topic">${esc(pc.topic || "")}</span></div>
+        <div class="conf-content"><b>A方</b>: ${esc((pc.a && pc.a.content) || "")}</div>
+        <div class="conf-content"><b>B方</b>: ${esc((pc.b && pc.b.content) || "")}</div>
+        <div class="conf-expl">🧭 解读: ${esc(pc.explanation || "")}</div></div>`;
+    }).join("");
+  } else if (ca && cb) {
+    h += '<div class="chat-hint">两篇论文之间未发现直接矛盾或张力（基于已核验声明的矛盾检测）</div>';
+  } else {
+    h += '<div class="chat-hint">争议点需矛盾检测产出（完整运行流水线后自动生成）</div>';
+  }
+  body.innerHTML = h;
+}
+
+/* tabs 切换（含懒加载标签页） */
 document.querySelectorAll(".tabs button").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll(".tabs button").forEach(x => x.classList.remove("on"));
     document.querySelectorAll(".tab-body").forEach(x => x.classList.add("hidden"));
     b.classList.add("on");
     $("#tab-" + b.dataset.tab).classList.remove("hidden");
+    const tab = b.dataset.tab;
+    if (tab === "qa") { renderQa(); loadPool(); }
+    else if (tab === "assist") renderAssist();
+    else if (tab === "reader") renderReader();
+    else if (tab === "compare") renderCompare();
   };
 });
 

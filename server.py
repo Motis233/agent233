@@ -34,7 +34,7 @@ import uuid
 
 import config
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -61,6 +61,11 @@ _SNAPSHOT_FILES = [
     ("evidence_index.json", os.path.join(DATA, "evidence_index.json")),
     ("plan.json", os.path.join(DATA, "plan_last.json")),
     ("glossary.json", os.path.join(DATA, "glossary_last.json")),
+    # 老页面功能合并新增：论文完整元数据 / 综述总结 / Benchmark 评测
+    ("meta.json", os.path.join(DATA, "papers_meta.json")),
+    ("survey_summary.md", os.path.join(OUTPUT, "survey_summary.md")),
+    ("benchmark.json", os.path.join(DATA, "benchmark",
+                                    "benchmark_report.json")),
 ]
 
 _lock = threading.Lock()          # 保护注册表读写与任务提交互斥
@@ -380,7 +385,9 @@ async def api_result(tid: str, request: Request):
     files = {"report": "final_report.md", "review_table": "review_table.md",
              "papers": "papers.json", "cards": "paper_cards.json",
              "review": "review_results.json", "conflicts": "conflicts.json",
-             "evidence": "evidence_index.json", "plan": "plan.json"}
+             "evidence": "evidence_index.json", "plan": "plan.json",
+             "meta": "meta.json", "glossary": "glossary.json",
+             "survey_md": "survey_summary.md", "benchmark": "benchmark.json"}
     for key, name in files.items():
         p = os.path.join(d, name)
         if not os.path.exists(p):
@@ -427,6 +434,495 @@ async def api_pdf(arxiv_id: str, request: Request):
     if not os.path.exists(p):
         raise HTTPException(404, "PDF 不存在（容器重启后 papers/ 会清空）")
     return FileResponse(p, media_type="application/pdf")
+
+
+# ================================================================
+# 老页面功能合并（app.py → FastAPI）：问答 / AI助手 / 综述总结 /
+# 小白解读 / 证据穿透 / PDF全文搜索 / Word·LaTeX导出 / Benchmark
+# ================================================================
+EVIDENCE_DIR = os.path.join(BASE, "evidence")
+
+# qa_agent 等模块固定读 DATA_DIR 共享文件；查看历史任务前先把该任务
+# 的快照拷回 DATA_DIR（单活跃任务架构：有任务运行时禁止切换数据源）
+def _no_running() -> str | None:
+    act = _active(_load_tasks())
+    return (f"已有任务在运行（{act['topic'][:20]}…），结束后才能切换"
+            "历史任务数据" if act else None)
+
+
+def _stage_task_files(tid: str) -> None:
+    d = _task_dir(tid)
+    for src, dst in (("paper_cards.json", "paper_cards.json"),
+                     ("review_results.json", "review_results.json"),
+                     ("evidence_index.json", "evidence_index.json"),
+                     ("meta.json", "papers_meta.json")):
+        p = os.path.join(d, src)
+        if os.path.exists(p):
+            shutil.copy2(p, os.path.join(DATA, dst))
+
+
+def _read_json(p: str, default=None):
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _read_text(p: str) -> str:
+    try:
+        with open(p, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _guard_task(tid: str) -> None:
+    if not os.path.isdir(_task_dir(tid)):
+        raise HTTPException(404, "任务不存在（或快照已被清理）")
+
+
+# ---- 可信问答（Evidence-Bounded QA） ----
+@app.get("/api/tasks/{tid}/pool")
+async def api_pool(tid: str, request: Request):
+    """声明池（问答的知识边界）。读取前把该任务快照拷回 DATA_DIR"""
+    _check_auth(request)
+    _guard_task(tid)
+    blocked = _no_running()
+    if blocked:
+        raise HTTPException(409, blocked)
+    _stage_task_files(tid)
+    from agents import qa_agent
+    return {"pool": qa_agent.build_claim_pool()}
+
+
+@app.post("/api/tasks/{tid}/qa")
+async def api_qa(tid: str, request: Request):
+    _check_auth(request)
+    _guard_task(tid)
+    blocked = _no_running()
+    if blocked:
+        raise HTTPException(409, blocked)
+    body = await request.json()
+    q = (body.get("question") or "").strip()
+    if not q:
+        raise HTTPException(400, "question 不能为空")
+    _stage_task_files(tid)
+    from agents import qa_agent
+    ans, pool = qa_agent.answer_question(q, body.get("history"))
+    return {"can_answer": ans.can_answer, "answer": ans.answer,
+            "used_claims": ans.used_claims, "missing": ans.missing,
+            "pool": pool}
+
+
+@app.post("/api/tasks/{tid}/refusal-test")
+async def api_refusal(tid: str, request: Request):
+    """拒答能力自检（逐条 NDJSON 流式返回，避免长请求被网关掐断）"""
+    _check_auth(request)
+    _guard_task(tid)
+    blocked = _no_running()
+    if blocked:
+        raise HTTPException(409, blocked)
+    _stage_task_files(tid)
+
+    def gen():
+        from agents import qa_agent
+        pool = qa_agent.build_claim_pool()
+        if not pool:
+            yield json.dumps({"type": "error", "msg": "声明池为空，无法测试"},
+                             ensure_ascii=False) + "\n"
+            return
+        cases = []
+        for c in pool[:3]:
+            cases.append({"q": f"关于{c['paper_title'][:30]}这篇论文，"
+                               f"{c['content'][:50]}... 请具体说明它的相关情况",
+                          "expect": True})
+        method = next((c for c in pool if c["type"] == "method"), None)
+        if method:
+            short = method["paper_title"].split(":")[0].strip()
+            cases.append({"q": f"{short}的核心方法是什么？", "expect": True})
+        for q in ("Transformer的自注意力机制是怎么计算的？",
+                  "CRISPR基因编辑技术的原理是什么？",
+                  "量子计算中的qubit和经典bit的本质区别是什么？",
+                  "美联储加息对汇率的影响机制是什么？",
+                  "明朝郑和下西洋的路线经过哪些地区？",
+                  "黑洞的信息悖论目前有哪些候选解决方案？",
+                  "白癜风的主要临床治疗手段有哪些？",
+                  "国际法中的领海宽度是如何确定的？",
+                  "碳交易市场的定价机制是怎样运作的？",
+                  "古希腊城邦制度的典型特征是什么？"):
+            cases.append({"q": q, "expect": False})
+        correct = 0
+        details = []
+        for t in cases:
+            try:
+                ans, _ = qa_agent.answer_question(t["q"])
+            except Exception as e:
+                d = {"question": t["q"][:60],
+                     "expect_answerable": t["expect"],
+                     "actual_answerable": None, "correct": False,
+                     "answer_preview": f"调用失败: {e}"}
+            else:
+                ok = ans.can_answer == t["expect"]
+                correct += ok
+                d = {"question": t["q"][:60],
+                     "expect_answerable": t["expect"],
+                     "actual_answerable": ans.can_answer, "correct": ok,
+                     "answer_preview": ans.answer[:80]}
+            details.append(d)
+            yield json.dumps({"type": "case", **d}, ensure_ascii=False) + "\n"
+        na = max(sum(1 for t in cases if t["expect"]), 1)
+        nr = max(len(cases) - na, 1)
+        yield json.dumps({"type": "final",
+                          "answerable_acc": sum(
+                              1 for d in details
+                              if d["expect_answerable"] and d["correct"]) / na,
+                          "refusal_acc": sum(
+                              1 for d in details
+                              if not d["expect_answerable"] and d["correct"])
+                          / nr}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+# ---- 生成类（流式文本） ----
+_PLAIN_SYS = """你是一位翻译高手，擅长把学术文献综述逐句转述成大白话——像把一篇文言文翻译成白话文，内容一字不增一字不减，只是语言变通俗。
+
+核心原则（决定成败，逐条遵守）:
+1. **忠实转译，不从零讲课**: 报告讲什么你就讲什么，按报告原有的结构和顺序走。禁止添加报告之外的学科背景、历史铺垫、入门教学——读者要的是'看懂这份报告'，不是'学这门课'
+2. **每个艰深句子都要翻成人话**: 原报告里读者可能看不懂的句子（术语密集的、逻辑复杂的），必须换成日常语言重新表达，意思严格不变。
+   - 例: 原文'该方法采用代理梯度替代不可微的脉冲激活函数' → 翻译'这个方法的做法是：因为脉冲这种'放电行为'没法直接算数学梯度，他们就找个行为相似的平滑函数来代替它算'
+3. **术语处理要轻**: 术语首次出现时在括号里用一句话点明它指什么即可（如: 代理梯度（就是替脉冲放电行为找的'数学替身'）），不展开教学，不单独成段
+4. **数据结论引用全保留**: 所有数字、结论、论文引用信息原样保留，一个都不能丢——这是报告的核心价值
+5. **类比是调味料不是主菜**: 只在难懂的原理处用一句类比帮理解，禁止大段故事化铺垫
+6. markdown输出，小节标题跟随原报告但可口语化；文末加一小段'一句话总结这份报告'"""
+
+_SURVEY_SYS = """你是资深学术综述撰稿人兼领域分析师。{topic_line}基于给定的论文清单（[编号]为引用标识），输出两部分内容。
+
+【第一部分: 叙述性综述】
+- 用连贯的叙述性文字（禁止表格、禁止罗列式堆砌）梳理研究图景
+- 按脉络组织: 研究背景与动机 → 现有工作按思路分派 → 各派代表工作与核心思想 → 发展趋势
+- 只能使用给定论文的信息，不得编造未提供的文献、数据或结论；提及具体工作时标注[编号]（600-900字）
+
+【第二部分: AI观点（仅供参考）】
+- 对检索出的论文做跨文献归纳偏置分析，输出3-5条观点
+- 每条观点必须遵循如下句式骨架（用实际归纳内容填充XX）:
+  现有 XX 方法在 XX 场景下具备 XX 优势，但普遍存在 XX 局限，在 XX 条件下效果不足，目前针对该问题的相关研究较少，有待进一步探索
+- 每条观点后标注依据: (支撑: [编号])；无直接支撑的推断标 (推断)
+- 观点之间不重复，各自覆盖不同的方法路线或维度
+
+输出为markdown，结构如下:
+# 📖 叙述性综述
+（正文）
+# 💡 AI观点（仅供参考）
+1. ...
+2. ...
+（结尾附一行提示: 以上观点为AI归纳推断，仅供参考）
+
+论文清单如下:
+{src}"""
+
+_ASSIST_GUIDE = """【系统使用说明】
+- 系统定位: 科研文献整理Agent。用户输入研究主题后自动执行五段流水线: 规划(生成检索词)→检索(下载论文PDF)→提取(信息卡片)→审查(两级防幻觉核验)→综合(综述报告)。另有证据定位(PDF原文高亮穿透)和矛盾检测(学术争议发现)两个后处理。
+- 操作: 左侧输入研究主题（建议具体），选检索模式与目标篇数，点「开始综述」（约10-15分钟，运行中勿重复点击）；历史任务可从左侧任务列表随时回看。
+- 🎯三模式检索(🌱入门综述/🚀前沿突破/🔀交叉领域): 通过「检索模式」选择，作为流水线的检索阶段运行；模式未命中自动降级标准检索，降级后仍未命中才终止流水线。模式检索还会为核心名词生成速查表。
+- 标签页: 🔍检索结果(四种排序+徽章+四路信号分解) | 📝综述报告(可生成🍼小白解读，支持Word/LaTeX导出) | 💬可信问答(仅基于声明池、证据不足会拒答) | 🤖AI助手(本页) | 📚综述总结(叙述性综述+AI观点) | 📄信息卡片(每篇论文的声明+📎证据原文) | ✅核验明细(每条声明核验结果+Benchmark) | ⚡矛盾与张力 | 📊综述表格 | 🕸引用图谱 | 📚论文原文(PDF阅读+🔍全文搜索+📝阅读笔记+📖名词速查) | ⚔️对比阅读 | 📖新手指南。
+- 关键指标: 声明=从论文摘出的可核实信息；通过核验=引用真实且无夸大；幻觉率=AI表述与论文原文不符比例（越低越可信）；可穿透证据=能定位到PDF原文高亮处的声明数。
+- 徽章含义: 🔗引用链经典(被多篇种子论文共同引用) | 🔥高被引 | 🤖高度切题(LLM相关性≥4.5)。"""
+
+
+def _survey_src(d: str) -> str:
+    """组织综述总结的LLM输入: 论文元数据 + 通过核验的关键声明"""
+    meta = _read_json(os.path.join(d, "meta.json"), []) or []
+    cards = _read_json(os.path.join(d, "paper_cards.json"), []) or []
+    reviews = _read_json(os.path.join(d, "review_results.json"), []) or []
+    supported = {f"{r.get('arxiv_id')}#{r.get('claim_index')}" for r in reviews
+                 if (r.get("verdict") or {}).get("verdict") == "supported"}
+    cards_by = {c.get("arxiv_id"): c for c in cards}
+    blocks = []
+    for i, p in enumerate(meta, 1):
+        card = cards_by.get(p.get("arxiv_id"))
+        lines = [f"[{i}] 标题: {p.get('title', '')}",
+                 f"    年份: {p.get('year')}  被引次数: {p.get('cited_by', 0)}"]
+        ab = (p.get("abstract") or "").strip()
+        if ab:
+            lines.append(f"    摘要: {ab[:500]}")
+        if card:
+            kept = []
+            for idx, cl in enumerate(card.get("claims") or []):
+                key = f"{p.get('arxiv_id')}#{idx}"
+                if (key in supported) if supported else True:
+                    kept.append(cl.get("content", ""))
+            for c in kept[:4]:
+                lines.append(f"    · 关键信息: {c[:220]}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def _stream(gen):
+    return StreamingResponse(gen, media_type="text/plain; charset=utf-8",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/tasks/{tid}/plain")
+async def api_plain(tid: str, request: Request):
+    """🍼 小白解读：把综述报告转述成大白话（流式）"""
+    _check_auth(request)
+    _guard_task(tid)
+    report = _read_text(os.path.join(_task_dir(tid), "final_report.md"))
+    if not report:
+        raise HTTPException(404, "该任务没有综述报告")
+    import llm_client
+
+    def gen():
+        yield from llm_client.chat_stream(
+            [{"role": "system", "content": _PLAIN_SYS},
+             {"role": "user",
+              "content": "请把以下文献综述转述成大白话版（要求: 忠实转译"
+                         "报告本身，不添加报告外的学科教学）:\n\n" + report}],
+            temperature=0.3)
+
+    return _stream(gen())
+
+
+@app.post("/api/tasks/{tid}/survey")
+async def api_survey(tid: str, request: Request):
+    """✍️ 综述总结：叙述性综述 + AI观点（流式，结束后落盘到任务快照）"""
+    _check_auth(request)
+    _guard_task(tid)
+    blocked = _no_running()
+    if blocked:
+        raise HTTPException(409, blocked)
+    d = _task_dir(tid)
+    src = _survey_src(d)
+    if not src:
+        raise HTTPException(404, "没有可用的论文数据（meta.json 缺失）")
+    tasks = _load_tasks()
+    topic = (_find(tasks, tid) or {}).get("topic", "")
+    topic_line = f"研究主题: {topic}\n" if topic else ""
+    import llm_client
+
+    def gen():
+        buf = []
+        try:
+            for chunk in llm_client.chat_stream(
+                    [{"role": "system",
+                      "content": "你是严谨的学术综述撰稿人，忠于给定材料。"},
+                     {"role": "user",
+                      "content": _SURVEY_SYS.format(topic_line=topic_line,
+                                                    src=src)}],
+                    temperature=0.3):
+                buf.append(chunk)
+                yield chunk
+        finally:
+            if buf:
+                try:
+                    with open(os.path.join(d, "survey_summary.md"), "w",
+                              encoding="utf-8") as f:
+                        f.write("".join(buf))
+                except OSError:
+                    pass
+
+    return _stream(gen())
+
+
+@app.post("/api/assistant")
+async def api_assistant(request: Request):
+    """🤖 AI助手：系统使用 + 论文内容 全能问答（流式）"""
+    _check_auth(request)
+    body = await request.json()
+    tid = body.get("tid") or ""
+    history = body.get("history") or []
+    parts = [_ASSIST_GUIDE]
+    if tid and os.path.isdir(_task_dir(tid)):
+        blocked = _no_running()
+        if blocked:
+            raise HTTPException(409, blocked)
+        _stage_task_files(tid)
+        meta = _read_json(os.path.join(_task_dir(tid), "meta.json"),
+                          []) or []
+        if meta:
+            lines = ["【当前结果概况】"]
+            topic = (_find(_load_tasks(), tid) or {}).get("topic", "")
+            if topic:
+                lines.append(f"- 检索主题: {topic}")
+            lines.append(f"- 收录论文{len(meta)}篇:")
+            for p in sorted(meta, key=lambda x: x.get("final_score") or 0,
+                            reverse=True)[:15]:
+                lines.append(
+                    f"  {p.get('title', '')[:70]} ({p.get('year')}, "
+                    f"被引{p.get('cited_by', 0)}, "
+                    f"相关性{p.get('relevance_score')}, "
+                    f"arXiv:{p.get('arxiv_id')})")
+            parts.append("\n".join(lines))
+        try:
+            from agents import qa_agent
+            pool = qa_agent.build_claim_pool()
+            if pool:
+                lines = [f"【已核验声明池】(共{len(pool)}条，"
+                         "回答论文内容问题时只能依据这些)"]
+                for c in pool:
+                    lines.append(f"[声明#{c['num']}] ({c['type']}, "
+                                 f"《{c['paper_title']}》{c['year']}年)\n"
+                                 f"{c['content']}")
+                parts.append("\n".join(lines))
+        except Exception:
+            pass
+        report = _read_text(os.path.join(_task_dir(tid), "final_report.md"))
+        if report:
+            parts.append(f"【最终综述报告全文】\n{report}")
+    sys_prompt = (
+        "你是'科研文献整理Agent'系统的内置AI助手。用户可能是初次使用者"
+        "或想了解论文内容的研究者。\n回答规则:\n"
+        "1. 【系统使用类问题】(怎么操作、指标含义、某个标签页是什么): "
+        "根据下面的系统说明回答，简洁实用\n"
+        "2. 【论文内容类问题】(方法、结果、结论): 只依据下面的"
+        "'已核验声明池'和'最终综述报告'回答，引用标注[声明#N]；"
+        "池里没有的不要编造，说明'当前结果中没有相关信息'\n"
+        "3. 【两者混合】: 分别按对应规则处理\n"
+        "4. 全程用中文，通俗但专业；回答末尾视情况提示用户去哪个标签页"
+        "能看到更多\n\n" + "\n\n".join(parts))
+    import llm_client
+
+    def gen():
+        yield from llm_client.chat_stream(
+            [{"role": "system", "content": sys_prompt}]
+            + [h for h in history if h.get("role") in ("user", "assistant")]
+            [-6:], temperature=0.3)
+
+    return _stream(gen())
+
+
+# ---- 证据穿透 / PDF全文搜索 / 导出 ----
+@app.get("/api/tasks/{tid}/evidence/{arxiv_id}/{claim_index}")
+async def api_evidence(tid: str, arxiv_id: str, claim_index: int,
+                       request: Request):
+    """声明 -> 证据索引（页码/高亮截图URL）。图片缺失时优雅降级"""
+    _check_auth(request)
+    idx = _read_json(os.path.join(_task_dir(tid), "evidence_index.json"),
+                     {}) or {}
+    ev = idx.get(f"{arxiv_id}#{claim_index}")
+    if not ev:
+        return {"located": False}
+    out = {"located": bool(ev.get("located")), "pdf": ev.get("pdf"),
+           "page": (ev.get("page") + 1) if ev.get("page") is not None else None,
+           "match_level": ev.get("match_level")}
+    img = ev.get("image")
+    if out["located"] and img:
+        name = os.path.basename(str(img))
+        if os.path.exists(os.path.join(EVIDENCE_DIR, name)):
+            out["image_url"] = "/api/evidence-img/" + name
+        else:
+            out["image_missing"] = True
+    return out
+
+
+@app.get("/api/evidence-img/{name}")
+async def api_evidence_img(name: str, request: Request):
+    _check_auth(request)
+    p = os.path.join(EVIDENCE_DIR, os.path.basename(name))
+    if not os.path.exists(p):
+        raise HTTPException(404, "证据图片不存在（容器重启后 evidence/ 会清空）")
+    return FileResponse(p, media_type="image/png")
+
+
+@app.get("/api/pdfs")
+async def api_pdfs(request: Request):
+    """本地已下载的论文PDF清单（论文原文阅读用）"""
+    _check_auth(request)
+    import glob as _glob
+    ids = sorted(os.path.splitext(os.path.basename(p))[0]
+                 for p in _glob.glob(os.path.join(config.PAPER_DIR, "*.pdf")))
+    return {"ids": ids}
+
+
+@app.get("/api/search-pdfs")
+async def api_search_pdfs(request: Request, q: str = "", tid: str = "",
+                          limit: int = 40):
+    """PDF全文搜索（PyMuPDF跨文档逐页检索，多词=同页同时出现）"""
+    _check_auth(request)
+    q = (q or "").strip()
+    if not q:
+        raise HTTPException(400, "关键词不能为空")
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        raise HTTPException(501, "服务器未安装 PyMuPDF，全文搜索不可用")
+    import glob as _glob
+    pdfs = sorted(_glob.glob(os.path.join(config.PAPER_DIR, "*.pdf")))
+    if not pdfs:
+        raise HTTPException(404, "papers/ 目录下没有PDF（容器重启后会清空，"
+                                 "需重新运行流水线）")
+    titles = {}
+    if tid:
+        for p in (_read_json(os.path.join(_task_dir(tid), "meta.json"),
+                             []) or []):
+            titles[p.get("arxiv_id")] = p.get("title")
+    terms = [t for t in q.split() if t]
+    by_doc: dict = {}
+    max_hits = max(10, min(limit, 80))
+    for path in pdfs:
+        pid = os.path.splitext(os.path.basename(path))[0]
+        try:
+            doc = fitz.open(path)
+        except Exception:
+            continue
+        with doc:
+            for pi in range(doc.page_count):
+                text = doc[pi].get_text()
+                tl = text.lower()
+                if all(t.lower() in tl for t in terms):
+                    pos = tl.find(terms[0].lower())
+                    snippet = text[max(0, pos - 60):pos + 160].replace(
+                        "\n", " ").strip()
+                    by_doc.setdefault(pid, []).append(
+                        {"arxiv_id": pid,
+                         "title": titles.get(pid) or pid,
+                         "page": pi, "snippet": snippet})
+    hits = []
+    for pid, hs in sorted(by_doc.items(), key=lambda kv: -len(kv[1])):
+        for h in hs[:3]:
+            h["doc_hits"] = len(hs)
+            hits.append(h)
+        if len(hits) >= max_hits:
+            break
+    return {"query": q, "total_docs": len(by_doc), "hits": hits[:max_hits]}
+
+
+@app.get("/api/tasks/{tid}/export/{fmt}")
+async def api_export(tid: str, fmt: str, request: Request):
+    """导出综述报告：docx / latex(zip)。Markdown 由前端直接下载"""
+    _check_auth(request)
+    _guard_task(tid)
+    d = _task_dir(tid)
+    report = _read_text(os.path.join(d, "final_report.md"))
+    if not report:
+        raise HTTPException(404, "该任务没有综述报告")
+    topic = (_find(_load_tasks(), tid) or {}).get("topic", "文献综述")
+    meta = _read_json(os.path.join(d, "meta.json"), []) or []
+    meta_lines = [f"主题: {topic}", f"收录论文: {len(meta)} 篇"]
+    try:
+        import exporter
+        if fmt == "docx":
+            buf = exporter.md_to_docx(report, title=f"研究综述: {topic}",
+                                      meta_lines=meta_lines)
+            return Response(buf, media_type="application/vnd.openxmlformats"
+                            "-officedocument.wordprocessingml.document",
+                            headers={"Content-Disposition":
+                                     'attachment; filename="review.docx"'})
+        if fmt == "latex":
+            refs = exporter.meta_from_papers_json(meta)
+            buf = exporter.build_latex_package(report, f"研究综述: {topic}",
+                                               refs, meta_lines)
+            return Response(buf, media_type="application/zip",
+                            headers={"Content-Disposition":
+                                     'attachment; filename="latex_package.zip"'})
+    except Exception as e:
+        raise HTTPException(500, f"导出失败: {e}")
+    raise HTTPException(400, f"不支持的导出格式: {fmt}")
 
 
 @app.get("/api/health")
