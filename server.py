@@ -176,6 +176,16 @@ def _watcher(task: dict) -> None:
                 cur = _find(tasks, task["id"])
                 if cur and cur.get("state") == "running":
                     _snapshot(cur, state)
+                    # 把 worker 写入状态文件的诊断信息带回注册表，
+                    # 否则前端失败后只能看到 state，看不到原因
+                    if st.get("stage"):
+                        cur["stage"] = st.get("stage")
+                    if st.get("msg"):
+                        cur["msg"] = st.get("msg")
+                    if st.get("hallucination_rate") is not None:
+                        cur["hallucination_rate"] = st.get("hallucination_rate")
+                    if st.get("traceback"):
+                        cur["traceback"] = st.get("traceback")[-1500:]
                     _save_tasks(tasks)
             return
         if proc is not None and proc.poll() is not None:
@@ -254,7 +264,7 @@ async def api_task(tid: str, request: Request):
         raise HTTPException(404, "任务不存在")
     info = {k: t.get(k) for k in
             ("id", "topic", "mode", "fast", "state", "submitted_at",
-             "finished_at", "hallucination_rate", "msg")}
+             "finished_at", "hallucination_rate", "msg", "stage", "traceback")}
     if t["state"] == "running":
         info["live"] = _read_status()     # 活跃任务附带实时状态
     return info
@@ -382,6 +392,22 @@ async def api_result(tid: str, request: Request):
         except Exception:
             continue
     return out
+
+
+@app.get("/api/tasks/{tid}/log")
+async def api_log(tid: str, request: Request, tail: int = 150):
+    """返回任务 worker 的运行日志尾部（失败诊断用）"""
+    _check_auth(request)
+    p = os.path.join(_task_dir(tid), "run.log")
+    if not os.path.exists(p):
+        raise HTTPException(404, "无运行日志（容器重启后磁盘会重置）")
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        raise HTTPException(404, "日志读取失败")
+    n = max(10, min(tail, 500))
+    return {"log": "".join(lines[-n:]), "total_lines": len(lines)}
 
 
 @app.get("/api/tasks/{tid}/graph")

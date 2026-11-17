@@ -189,6 +189,18 @@ button:active { transform: scale(.98); }
 .rev-table tr { border-radius: 10px; }
 
 .empty { color: var(--muted); text-align: center; padding: 48px 0; line-height: 2; }
+
+/* 失败诊断 */
+.err-banner { margin-top: 12px; background: var(--red-lt); border: 1px solid #fecaca;
+  color: var(--red); border-radius: 10px; padding: 10px 14px; font-size: 13px;
+  line-height: 1.7; font-weight: 600; }
+.err-summary { cursor: pointer; font-size: 12.5px; color: var(--slate);
+  user-select: none; margin-top: 6px; display: inline-block; }
+.err-summary:hover { color: var(--brand); }
+.log-pre { margin-top: 8px; background: #0b1220; color: #93a4c4; border-radius: 10px;
+  padding: 12px 14px; font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px;
+  line-height: 1.7; max-height: 340px; overflow: auto; white-space: pre-wrap;
+  word-break: break-all; border: 1px solid #1e2a44; }
 iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-radius: 12px;
          background: #fff; }
 .hidden { display: none !important; }
@@ -286,6 +298,13 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
           <span id="res-hallu" class="badge hidden"></span>
         </div>
         <div id="stat-row" class="hidden"></div>
+        <div id="res-err" class="hidden">
+          <div class="err-banner"></div>
+          <details>
+            <summary class="err-summary">▸ 展开运行日志（最后150行）</summary>
+            <pre id="err-log" class="log-pre"></pre>
+          </details>
+        </div>
         <div class="tabs">
           <button data-tab="report" class="on">综述报告</button>
           <button data-tab="papers">论文列表</button>
@@ -472,6 +491,19 @@ async function showResult(id, t) {
     hb.className = "badge " + (t.hallucination_rate <= 0.12 ? "done" : "error");
     hb.textContent = "幻觉率 " + (t.hallucination_rate * 100).toFixed(1) + "%";
   } else hb.classList.add("hidden");
+
+  // 失败/终止诊断：显示原因横幅 + 可展开的运行日志尾部
+  const eb = $("#res-err");
+  if (t.state === "error" || t.state === "cancelled") {
+    eb.classList.remove("hidden");
+    eb.querySelector(".err-banner").textContent =
+      "失败原因: " + (t.msg || stateText(t.state));
+    const lg = $("#err-log");
+    lg.textContent = "加载中…";
+    api(`/api/tasks/${id}/log`)
+      .then(x => { lg.textContent = x.log || "（日志为空）"; })
+      .catch(() => { lg.textContent = "（日志不可读：容器重启后磁盘已重置）"; });
+  } else eb.classList.add("hidden");
 
   let r = {};
   try { r = await api(`/api/tasks/${id}/result`); } catch (e) { /* 无产物 */ }
