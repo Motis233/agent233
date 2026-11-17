@@ -204,10 +204,10 @@ button:active { transform: scale(.98); }
   word-break: break-all; border: 1px solid #1e2a44; }
 iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-radius: 12px;
          background: #fff; }
-.graph-legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 0 0 10px;
-                font-size: 12px; color: var(--slate); }
-.graph-legend span { display: inline-flex; align-items: center; gap: 5px; }
-.graph-legend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.graph-head { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.graph-cap { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.graph-frame { width: 100%; border: 1px solid var(--border); border-radius: 12px;
+               background: #fff; }
 .hidden { display: none !important; }
 #toast { position: fixed; top: 18px; right: 18px; background: var(--red); color: #fff;
          padding: 11px 18px; border-radius: 10px; font-size: 13px; z-index: 99;
@@ -472,6 +472,17 @@ async function api(path, opts = {}) {
     throw new Error(msg);
   }
   return r.json();
+}
+
+async function apiText(path) {
+  const r = await fetch(path, {headers: {"X-App-Password": pw}});
+  if (r.status === 401) {
+    const v = prompt("请输入访问密码");
+    if (v !== null) { pw = v; localStorage.setItem("pw", v); return apiText(path); }
+    throw new Error("需要访问密码");
+  }
+  if (!r.ok) throw new Error("加载失败(" + r.status + ")");
+  return r.text();
 }
 
 async function ensureAuth() {
@@ -1135,16 +1146,22 @@ function renderTable() {
     : '<div class="empty">综述表格未生成</div>';
 }
 function renderGraph() {
-  $("#tab-graph").innerHTML = CUR.r.report || CUR.r.papers
-    ? `<div class="graph-legend">
-         <span><i style="background:#2ecc71"></i>本次检索论文</span>
-         <span><i style="background:#e74c3c"></i>内部互引箭头</span>
-         <span><i style="background:#95a5a6"></i>外部被引论文</span>
-         <span><i style="background:#f39c12"></i>橙色=方法分类（降级模式）</span>
-         <span><i style="background:#6c5ce7"></i>紫色=检索关键词</span>
-       </div>
-       <iframe src="/api/tasks/${CUR.tid}/graph${pwq()}"></iframe>`
-    : "";
+  // 完全复刻Streamlit老页面的引用图谱tab（app.py L1348-1357）:
+  // 标题 + 图例caption + st.components.v1.html(graph_html, height=620)
+  // —— 内联srcdoc渲染pyvis整页HTML，而非iframe src加载
+  if (!CUR.r.report && !CUR.r.papers) {
+    $("#tab-graph").innerHTML = '<div class="empty">引用图谱未生成</div>';
+    return;
+  }
+  $("#tab-graph").innerHTML =
+    `<div class="graph-head">引用关系图谱（交互式）</div>
+     <div class="graph-cap">🟢 本次检索论文 | 🔴 内部互引箭头 | ⚪ 外部被引论文 | 🟠 橙色=方法分类(降级模式) | 🟣 紫色=检索关键词</div>
+     <iframe id="graph-frame" class="graph-frame" style="height:620px"></iframe>`;
+  apiText(`/api/tasks/${CUR.tid}/graph`).then(html => {
+    $("#graph-frame").srcdoc = html;
+  }).catch(e => {
+    $("#graph-frame").outerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  });
 }
 const GUIDE_MD = `## 欢迎使用本系统 —— 3分钟看懂它是做什么的
 

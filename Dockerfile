@@ -7,7 +7,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
     "PyMuPDF>=1.28" \
     "arxiv>=4.0" \
-    "pyvis>=0.3" \
+    "pyvis==0.3.2" \
     "openai>=2.41" \
     "pydantic>=2.13" \
     "fastapi>=0.115" \
