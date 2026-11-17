@@ -182,11 +182,12 @@ function toast(msg) {
   setTimeout(() => t.remove(), 3500);
 }
 async function api(path, opts = {}) {
-  opts.headers = Object.assign({"X-App-Password": pw}, opts.headers || {});
-  const r = await fetch(path, opts);
+  const o = Object.assign({}, opts);
+  o.headers = Object.assign({}, o.headers || {}, {"X-App-Password": pw});
+  const r = await fetch(path, o);
   if (r.status === 401) {
     const v = prompt("请输入访问密码");
-    if (v !== null) { pw = v; localStorage.setItem("pw", v); return api(path, opts); }
+    if (v !== null) { pw = v; localStorage.setItem("pw", v); delete o.headers; return api(path, o); }
     throw new Error("需要访问密码");
   }
   if (!r.ok) {
