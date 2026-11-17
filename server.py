@@ -6,7 +6,8 @@ server.py —— FastAPI 任务服务器（方案一：前端与执行彻底解�
   - POST /api/run       提交任务，立即返回 task_id（页面不再被任务阻塞）
   - GET  /api/tasks     任务列表（历史可查回）
   - GET  /api/tasks/{id}/stream   SSE 实时推送进度（阶段/日志/终态）
-  - POST /api/tasks/{id}/cancel   置取消标志，worker 在阶段边界优雅退出
+  - POST /api/tasks/{id}/cancel   即时终止：terminate/kill worker 子进程，
+                                  并置取消标志以便优雅退出的场合兜底
   - GET  /api/tasks/{id}/result   报告+论文+矛盾+核验结果
   - GET  /api/tasks/{id}/graph    引用图谱（HTML）
 
@@ -63,6 +64,7 @@ _SNAPSHOT_FILES = [
 ]
 
 _lock = threading.Lock()          # 保护注册表读写与任务提交互斥
+_ACTIVE_PROCS: dict = {}          # tid -> Popen，取消接口据此即时终止进程
 
 app = FastAPI(title="文献综述 Agent")
 
@@ -168,6 +170,7 @@ def _watcher(task: dict) -> None:
         # 状态文件出现终态，或进程已退出 → 收尾
         terminal = {"done", "error", "cancelled"}
         if state in terminal:
+            _ACTIVE_PROCS.pop(task["id"], None)
             with _lock:
                 tasks = _load_tasks()
                 cur = _find(tasks, task["id"])
@@ -176,13 +179,18 @@ def _watcher(task: dict) -> None:
                     _save_tasks(tasks)
             return
         if proc is not None and proc.poll() is not None:
-            # 进程退出但状态文件没写成终态（如被强杀）→ 兜底标记 error
+            # 进程退出但状态文件没写成终态（如被强杀）→ 按是否请求过取消定性
+            _ACTIVE_PROCS.pop(task["id"], None)
             with _lock:
                 tasks = _load_tasks()
                 cur = _find(tasks, task["id"])
                 if cur and cur.get("state") == "running":
-                    _snapshot(cur, "error")
-                    cur["msg"] = f"worker 进程退出码 {proc.returncode}"
+                    was_cancel = bool(cur.get("cancel_requested"))
+                    _snapshot(cur, "cancelled" if was_cancel else "error")
+                    if was_cancel:
+                        cur["msg"] = "已按用户请求即时终止"
+                    else:
+                        cur["msg"] = f"worker 进程退出码 {proc.returncode}"
                     _save_tasks(tasks)
             return
 
@@ -220,6 +228,7 @@ async def api_run(request: Request):
         _save_tasks(tasks)
         proc = _spawn(task)
         task["_proc"] = proc          # 仅内存，watcher 用于兜底判活
+        _ACTIVE_PROCS[tid] = proc     # 取消接口据此即时终止
     threading.Thread(target=_watcher, args=(task,), daemon=True).start()
     return {"id": tid, "state": "running"}
 
@@ -260,8 +269,33 @@ async def api_cancel(tid: str, request: Request):
         raise HTTPException(404, "任务不存在")
     if t["state"] != "running":
         raise HTTPException(400, f"任务已是终态（{t['state']}），无需取消")
-    open(CANCEL_FLAG, "w").close()        # worker 在阶段边界发现即退出
-    return {"ok": True, "msg": "取消标志已置位，将在当前阶段结束后停止"}
+    # 1) 优雅信号：worker 若恰好处于阶段边界，可正常收尾退出
+    open(CANCEL_FLAG, "w").close()
+    # 2) 记录取消意图：worker 被强杀时，watcher 据此定性为 cancelled 而非 error
+    with _lock:
+        tasks = _load_tasks()
+        cur = _find(tasks, tid)
+        if cur:
+            cur["cancel_requested"] = True
+            _save_tasks(tasks)
+    # 3) 即时终止：直接 terminate/kill worker 子进程
+    proc = _ACTIVE_PROCS.get(tid)
+    hard = False
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
+                proc.wait(timeout=3)
+            hard = True
+        except Exception:
+            hard = False                      # 进程句柄异常时退回优雅取消
+    _ACTIVE_PROCS.pop(tid, None)
+    msg = ("已即时终止 worker 进程" if hard
+           else "取消标志已置位，将在当前阶段结束后停止")
+    return {"ok": True, "msg": msg, "hard": hard}
 
 
 @app.get("/api/tasks/{tid}/stream")
