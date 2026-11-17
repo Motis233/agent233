@@ -298,7 +298,7 @@ def build_graph(papers: list[PaperMeta],
                 ext_by_paper[p.arxiv_id] = ext_by_paper.get(p.arxiv_id, 0) + 1
                 ref_edges += 1
 
-    # ---- 降级方案：论文-方法分类二部图 ----
+    # ---- 降级方案：论文-方法分类（+检索词）关联图 ----
     if G.number_of_edges() == 0:
         graph_mode = "论文-方法分类二部图（OpenAlex/S2引用数据均不可达，自动降级）"
         print("[综合Agent] OpenAlex与S2引用数据均不可达，降级为论文-分类二部图")
@@ -307,6 +307,25 @@ def build_graph(papers: list[PaperMeta],
             cat = cat_by_id.get(p.arxiv_id, "未分类")
             G.add_node(cat, kind="category")
             G.add_edge(p.arxiv_id, cat, kind="belongs")
+        # 增强: 加入检索词节点——论文标题/摘要命中该词才连边。
+        # 全部来自真实检索路径(plan_last.json), 不编造引用关系;
+        # 让降级图也有"枢纽-辐条"结构可分析(用户反馈降级图太空)
+        try:
+            _plan_path = os.path.join(config.DATA_DIR, "plan_last.json")
+            _kws = [k for k in (json.load(open(
+                _plan_path, encoding="utf-8")).get("keywords") or []) if k][:6]
+            for _kw in _kws:
+                G.add_node(_kw, kind="keyword")
+                _hit = False
+                for p in papers:
+                    _blob = (p.title + " " + (p.abstract or "")).lower()
+                    if _kw.lower() in _blob:
+                        G.add_edge(p.arxiv_id, _kw, kind="belongs")
+                        _hit = True
+                if not _hit:
+                    G.remove_node(_kw)   # 无命中的扩展词不上图, 防噪音
+        except Exception as _e:
+            print(f"[综合Agent] 检索词节点添加失败(不影响降级图): {_e}")
 
     # ---- 节点属性（颜色区分身份）----
     color_map = {"internal": "#e74c3c", "external": "#bdc3c7",
@@ -327,7 +346,14 @@ def build_graph(papers: list[PaperMeta],
             G.nodes[node]["size"] = 20
         elif G.nodes[node].get("kind") == "category":
             G.nodes[node]["color"] = "#f39c12"          # 橙: 方法分类
+            # 显式label——新版vis-network对无label节点不渲染任何文字,
+            # 旧版才回退显示id(用户反馈"图谱节点全是编号/没有字")
+            G.nodes[node]["label"] = str(node)
             G.nodes[node]["size"] = 15
+        elif G.nodes[node].get("kind") == "keyword":
+            G.nodes[node]["color"] = "#6c5ce7"          # 紫: 检索关键词
+            G.nodes[node]["label"] = str(node)
+            G.nodes[node]["size"] = 12
         else:
             G.nodes[node]["color"] = "#95a5a6"          # 灰: 外部被引论文
             # 外部节点显示W-ID尾段（旧版显示完整openalex URL，视觉噪音）
