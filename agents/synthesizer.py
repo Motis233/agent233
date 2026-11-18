@@ -298,7 +298,7 @@ def build_graph(papers: list[PaperMeta],
                 ext_by_paper[p.arxiv_id] = ext_by_paper.get(p.arxiv_id, 0) + 1
                 ref_edges += 1
 
-    # ---- 降级方案：论文-方法分类二部图 ----
+    # ---- 降级方案：论文-方法分类（+检索词）关联图 ----
     if G.number_of_edges() == 0:
         graph_mode = "论文-方法分类二部图（OpenAlex/S2引用数据均不可达，自动降级）"
         print("[综合Agent] OpenAlex与S2引用数据均不可达，降级为论文-分类二部图")
@@ -307,28 +307,66 @@ def build_graph(papers: list[PaperMeta],
             cat = cat_by_id.get(p.arxiv_id, "未分类")
             G.add_node(cat, kind="category")
             G.add_edge(p.arxiv_id, cat, kind="belongs")
+        # 增强: 加入检索词节点——论文标题/摘要命中该词才连边。
+        # 全部来自真实检索路径(plan_last.json), 不编造引用关系;
+        # 让降级图也有"枢纽-辐条"结构可分析(用户反馈降级图太空)
+        try:
+            _plan_path = os.path.join(config.DATA_DIR, "plan_last.json")
+            _kws = [k for k in (json.load(open(
+                _plan_path, encoding="utf-8")).get("keywords") or []) if k][:6]
+            for _kw in _kws:
+                G.add_node(_kw, kind="keyword")
+                _hit = False
+                for p in papers:
+                    _blob = (p.title + " " + (p.abstract or "")).lower()
+                    if _kw.lower() in _blob:
+                        G.add_edge(p.arxiv_id, _kw, kind="belongs")
+                        _hit = True
+                if not _hit:
+                    G.remove_node(_kw)   # 无命中的扩展词不上图, 防噪音
+        except Exception as _e:
+            print(f"[综合Agent] 检索词节点添加失败(不影响降级图): {_e}")
 
     # ---- 节点属性（颜色区分身份）----
     color_map = {"internal": "#e74c3c", "external": "#bdc3c7",
                  "belongs": "#3498db"}
+
+    def _short(s: str, n: int = 30) -> str:
+        s = (s or "").strip()
+        return s if len(s) <= n else s[:n] + "…"
+
     for node in G.nodes():
         if node in our_ids:
             G.nodes[node]["color"] = "#2ecc71"          # 绿: 检索到的论文
             G.nodes[node]["title"] = (f"{title_by_id[node]} "
                                       f"({year_by_id[node]})")
+            # 节点直接显示论文标题（截断），悬停看完整标题+年份；
+            # 旧版标签是arXiv编号，可读性差（用户反馈）
+            G.nodes[node]["label"] = _short(title_by_id[node])
             G.nodes[node]["size"] = 20
         elif G.nodes[node].get("kind") == "category":
             G.nodes[node]["color"] = "#f39c12"          # 橙: 方法分类
+            # 显式label——新版vis-network对无label节点不渲染任何文字,
+            # 旧版才回退显示id(用户反馈"图谱节点全是编号/没有字")
+            G.nodes[node]["label"] = str(node)
             G.nodes[node]["size"] = 15
+        elif G.nodes[node].get("kind") == "keyword":
+            G.nodes[node]["color"] = "#6c5ce7"          # 紫: 检索关键词
+            G.nodes[node]["label"] = str(node)
+            G.nodes[node]["size"] = 12
         else:
             G.nodes[node]["color"] = "#95a5a6"          # 灰: 外部被引论文
+            # 外部节点显示W-ID尾段（旧版显示完整openalex URL，视觉噪音）
+            G.nodes[node]["label"] = str(node).rstrip("/").split("/")[-1]
             G.nodes[node]["size"] = 8
     for u, v, data in G.edges(data=True):
         data["color"] = color_map.get(data.get("kind"), "#bdc3c7")
 
     # ---- 渲染为交互式HTML ----
     net = Network(height="600px", width="100%", directed=True,
-                  bgcolor="#ffffff", font_color="#333333")
+                  bgcolor="#ffffff", font_color="#333333",
+                  heading=f"引用图谱 · {graph_mode} · "
+                          f"{G.number_of_nodes()}节点/{G.number_of_edges()}边")
     net.from_nx(G)
     net.repulsion(node_distance=120, spring_length=150)
     net.show_buttons(filter_=["physics"])

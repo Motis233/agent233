@@ -18,18 +18,42 @@ import os
 # ---------------------------------------------------------------
 # 一、LLM API 配置
 # ---------------------------------------------------------------
+def _clean(value: str) -> str:
+    """清理粘贴配置时常见的空格、换行和包裹引号。
+    Secrets/.env 里多一个空格或引号，服务商就会判定密钥无效（401）。"""
+    return (value or "").strip().strip('"').strip("'").strip()
+
+
 # API 密钥：优先从环境变量读取，读不到再从 .env 文件读取
-API_KEY = os.environ.get("LLM_API_KEY", "")
+API_KEY = _clean(os.environ.get("LLM_API_KEY", ""))
 
-# API 地址（兼容 OpenAI 格式的服务都可用）：
-#   DeepSeek: https://api.deepseek.com         （便宜，推荐开发调试）
+# API 地址（兼容 OpenAI 格式的服务都可用）。
+# 留空 = 按密钥自动识别厂商，无需手填：
+#   DeepSeek: https://api.deepseek.com
 #   智谱GLM:  https://open.bigmodel.cn/api/paas/v4
-BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
+BASE_URL = _clean(os.environ.get("LLM_BASE_URL", ""))
 
-# 默认模型名
-#   DeepSeek: deepseek-chat
-#   智谱GLM:  glm-4-flash（有免费额度，适合开发）
-MODEL_NAME = os.environ.get("LLM_MODEL", "deepseek-chat")
+# 默认模型名。留空 = 按服务商自动选（DeepSeek=deepseek-chat, GLM=glm-4-flash）
+MODEL_NAME = _clean(os.environ.get("LLM_MODEL", ""))
+
+# 备用服务商（可选）：主服务商拥塞（429/超时/5xx）时自动切换。
+# 留空 = 单端点模式，行为与原来完全一致。
+API_KEY_2 = _clean(os.environ.get("LLM_API_KEY_2", ""))
+BASE_URL_2 = _clean(os.environ.get("LLM_BASE_URL_2", ""))
+MODEL_NAME_2 = _clean(os.environ.get("LLM_MODEL_2", ""))
+
+# 各服务商的默认参数（自动识别时使用）
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
+GLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+GLM_DEFAULT_MODEL = "glm-4-flash"
+
+
+def _looks_like_glm_key(key: str) -> bool:
+    """智谱GLM密钥形如 '32位id.16位secret'（含一个点，不以sk-开头）；
+    DeepSeek密钥则固定以 sk- 开头。"""
+    return bool(key) and not key.startswith("sk-") and "." in key
+
 
 # ---------------------------------------------------------------
 # 一之二、Semantic Scholar API 密钥（检索Agent用）
@@ -75,6 +99,10 @@ LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
 # LLM网络失败的重试次数上限（2/4/8秒指数退避，总计最多约4分钟）
 LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))
 
+# 端点冷却时间（秒）：某端点被判定为拥塞后，这段时间内优先走另一个端点，
+# 避免每次调用都先去撞一次已限流的主端点（多花一次 429 的等待）
+LLM_ENDPOINT_COOLDOWN = float(os.environ.get("LLM_ENDPOINT_COOLDOWN", "90"))
+
 # 全局时间预算（分钟）：流水线从开始计时的硬上限，超预算立即中止
 # 并在网页标注失败阶段。40分钟远大于正常运行的10-15分钟，
 # 只拦截"限流风暴+多重试叠加"导致的病态长跑。
@@ -87,6 +115,12 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 PAPER_DIR = os.path.join(PROJECT_ROOT, "papers")  # 下载的PDF存放处
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")     # 证据库JSON存放处
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output") # 综合Agent的产出目录(表格/图谱/报告)
+
+# 首次运行时目录可能不存在（papers/data/output 被 .gitignore 排除，
+# 云端克隆下来只有代码）。app.py 会直接往 DATA_DIR 写状态文件和日志，
+# 不先建目录会抛 FileNotFoundError。导入 config 时统一建好。
+for _d in (PAPER_DIR, DATA_DIR, OUTPUT_DIR):
+    os.makedirs(_d, exist_ok=True)
 
 # ---------------------------------------------------------------
 # 四、如果 .env 文件存在，则加载其中未被环境变量覆盖的配置
@@ -108,15 +142,69 @@ if os.path.exists(_env_file):
                 key, value = line.split("=", 1)
                 key, value = key.strip(), value.strip()
                 if key == "LLM_API_KEY":
-                    API_KEY = API_KEY or value
+                    API_KEY = API_KEY or _clean(value)
                 elif key == "LLM_BASE_URL":
                     # 环境变量显式设置 > .env > 内置默认
                     if "LLM_BASE_URL" not in os.environ:
-                        BASE_URL = value
+                        BASE_URL = _clean(value)
                 elif key == "LLM_MODEL":
                     if "LLM_MODEL" not in os.environ:
-                        MODEL_NAME = value
+                        MODEL_NAME = _clean(value)
+                elif key == "LLM_API_KEY_2":
+                    API_KEY_2 = API_KEY_2 or _clean(value)
+                elif key == "LLM_BASE_URL_2":
+                    if "LLM_BASE_URL_2" not in os.environ:
+                        BASE_URL_2 = _clean(value)
+                elif key == "LLM_MODEL_2":
+                    if "LLM_MODEL_2" not in os.environ:
+                        MODEL_NAME_2 = _clean(value)
                 elif key == "S2_API_KEY":
                     S2_API_KEY = S2_API_KEY or value
                 elif key == "APP_PASSWORD":
                     APP_PASSWORD = APP_PASSWORD or value
+
+# ---------------------------------------------------------------
+# 五、按密钥自动识别服务商（.env 加载完之后再判断）
+# ---------------------------------------------------------------
+# 场景: 用户只换了密钥（例如换成智谱GLM），但 .env / Secrets 里的
+# LLM_BASE_URL 和 LLM_MODEL 还是 DeepSeek 的默认值 → 请求必然401。
+# 这里以密钥形态为准，自动纠正地址与模型名；显式配置的自定义代理
+# 地址（不含 deepseek 字样）不会被覆盖。
+
+
+def _resolve_provider(key: str, base: str, model: str):
+    """按密钥形态纠正地址与模型名，并补默认值。"""
+    if _looks_like_glm_key(key):
+        if not base or "deepseek" in base.lower():
+            base = GLM_BASE_URL
+        if not model or model.startswith("deepseek"):
+            model = GLM_DEFAULT_MODEL
+    if not base:
+        base = DEEPSEEK_BASE_URL
+    if not model:
+        model = DEEPSEEK_DEFAULT_MODEL
+    return base, model
+
+
+BASE_URL, MODEL_NAME = _resolve_provider(API_KEY, BASE_URL, MODEL_NAME)
+BASE_URL_2, MODEL_NAME_2 = _resolve_provider(API_KEY_2, BASE_URL_2, MODEL_NAME_2)
+
+# ---------------------------------------------------------------
+# 六、可用端点列表（主端点在前，备用端点在后）
+# ---------------------------------------------------------------
+# llm_client 按此顺序调用：主端点出错即切换下一个，冷却期内跳过拥塞端点。
+# 未配置备用密钥时只有一项，行为与原来的单端点模式一致。
+LLM_APIS = [{
+    "name": "主",
+    "api_key": API_KEY,
+    "base_url": BASE_URL,
+    "model": MODEL_NAME,
+}]
+if API_KEY_2:
+    LLM_APIS.append({
+        "name": "备",
+        "api_key": API_KEY_2,
+        "base_url": BASE_URL_2,
+        "model": MODEL_NAME_2,
+    })
+

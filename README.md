@@ -1,3 +1,13 @@
+---
+title: Literature Survey Agent
+emoji: 📚
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 科研文献整理 Agent
 
 基于**多 Agent 协作架构**的文献综述自动生成系统：输入一个研究主题，自动完成"检索 → 提取 → 审查 → 综合"全流程，产出带防幻觉核验的综述报告、证据链可穿透的信息卡片和交互式引用图谱。

@@ -21,14 +21,65 @@ import config
 import cache as _cache
 
 # ---------------------------------------------------------------
-# 创建全局客户端（整个项目共用一个，避免重复创建）
+# 多端点客户端（主 + 备用），按 base_url 缓存，避免重复创建
 # ---------------------------------------------------------------
 # timeout: 单次调用的硬超时（SDK默认600秒，网络挂起时一次就卡10分钟，
 #          这是"程序不结束"的主要根因，必须显式收紧）
 # max_retries=0: 关闭SDK内部重试，由下方chat()统一控制重试次数与退避，
 #          否则SDK重试×我们的重试相乘，失败场景耗时不可控
-client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL,
-                timeout=config.LLM_TIMEOUT, max_retries=0)
+_clients = {}
+
+
+def _ep_key(ep):
+    """端点唯一键：同一厂商的两把密钥共用 base_url，
+    必须带上密钥才能区分，否则第二个端点会复用第一个的客户端。"""
+    return (ep["base_url"], ep["api_key"])
+
+
+def _endpoint_client(ep):
+    """按端点创建（并缓存）OpenAI 客户端。"""
+    key = _ep_key(ep)
+    if key not in _clients:
+        _clients[key] = OpenAI(
+            api_key=ep["api_key"], base_url=ep["base_url"],
+            timeout=config.LLM_TIMEOUT, max_retries=0,
+        )
+    return _clients[key]
+
+
+# 端点冷却表：端点键 -> 恢复可用的时间戳
+_down_until = {}
+
+# 判定为"拥塞"的错误特征：限流、服务端 5xx、超时、连接中断
+_CONGEST_HINTS = ("429", "500", "502", "503", "504", "rate limit",
+                  "too many requests", "overloaded", "timeout",
+                  "timed out", "connection")
+# 认证类错误：重试同一端点无意义，直接换下一个端点
+_AUTH_HINTS = ("401", "403", "api key", "unauthorized", "invalid_api_key")
+
+
+def _is_hint(err, hints) -> bool:
+    s = str(err).lower()
+    return any(h in s for h in hints)
+
+
+def _available_endpoints():
+    """返回当前可用端点（冷却中的排在后面；全部冷却时仍返回全部，
+    避免因为冷却表把系统卡死在"无端点可用"）。"""
+    now = time.time()
+    fresh, cooled = [], []
+    for e in config.LLM_APIS:
+        (cooled if _down_until.get(_ep_key(e), 0) > now else fresh).append(e)
+    return fresh + cooled
+
+
+def _mark_down(ep):
+    _down_until[_ep_key(ep)] = time.time() + config.LLM_ENDPOINT_COOLDOWN
+
+
+def _mark_ok(ep):
+    _down_until.pop(_ep_key(ep), None)
+
 
 # 简易的用量统计器（用于结题报告的成本分析实验）
 usage_stats = {
@@ -36,6 +87,7 @@ usage_stats = {
     "cache_hits": 0,       # 缓存命中次数（省下的调用）
     "total_prompt_tokens": 0,   # 总输入token
     "total_completion_tokens": 0,  # 总输出token
+    "failovers": 0,        # 端点切换次数（主→备）
 }
 
 
@@ -74,6 +126,7 @@ def chat(messages, temperature=0.2, model=None, max_retries=None,
     返回:
         模型的纯文本回答 (str)
     """
+    requested_model = model  # None = 跟随端点的模型名（切换端点时才不会串模型）
     model = model or config.MODEL_NAME
     max_retries = config.LLM_MAX_RETRIES if max_retries is None else max_retries
 
@@ -88,16 +141,19 @@ def chat(messages, temperature=0.2, model=None, max_retries=None,
                   f"已命中{usage_stats['cache_hits']}次)")
             return hit
 
+    endpoints = _available_endpoints()
     for attempt in range(max_retries):
+        ep = endpoints[attempt % len(endpoints)]
         # 全局预算检查: 超预算立即中止（异常在try外抛出，不会被下面的
         # 重试逻辑吞掉），前端据此标注失败阶段
         budget.check("LLM调用")
         try:
-            response = client.chat.completions.create(
-                model=model,
+            response = _endpoint_client(ep).chat.completions.create(
+                model=requested_model or ep["model"],
                 messages=messages,
                 temperature=temperature,
             )
+            _mark_ok(ep)
             # ---- 记录用量（成本分析实验的数据）----
             usage_stats["total_calls"] += 1
             usage_stats["total_prompt_tokens"] += response.usage.prompt_tokens
@@ -117,10 +173,23 @@ def chat(messages, temperature=0.2, model=None, max_retries=None,
         except budget.BudgetExceededError:
             raise  # 预算耗尽不重试，直接上抛
         except Exception as e:
-            # 认证/鉴权类错误重试无意义（换多少次都是401），立即上抛
-            # 避免白等2+4+8秒并掩盖真实问题
-            if "401" in str(e) or "403" in str(e) or "api key" in str(e).lower():
+            multi = len(endpoints) > 1
+            # 认证/鉴权类错误：同一端点重试无意义（换多少次都是401）。
+            # 有备用端点时直接换过去，否则立即上抛，避免白等 2+4+8 秒
+            if _is_hint(e, _AUTH_HINTS):
+                if multi:
+                    print(f"[llm_client] {ep['name']}端点鉴权失败: {e}，切换备用端点")
+                    usage_stats["failovers"] += 1
+                    continue
                 raise
+            # 拥塞（限流/5xx/超时/连接中断）：标记冷却，切换到另一端点
+            if multi and _is_hint(e, _CONGEST_HINTS):
+                _mark_down(ep)
+                usage_stats["failovers"] += 1
+                print(f"[llm_client] {ep['name']}端点拥塞({attempt + 1}/{max_retries}): "
+                      f"{e}，冷却{int(config.LLM_ENDPOINT_COOLDOWN)}秒并切换备用端点")
+                time.sleep(1)
+                continue
             # 重试策略：等待时间指数增长（2秒、4秒、8秒）
             wait = 2 ** (attempt + 1)
             print(f"[llm_client] 调用失败(第{attempt + 1}次): {e}，{wait}秒后重试...")
@@ -141,24 +210,46 @@ def chat_stream(messages, temperature=0.2, model=None, max_retries=2):
     返回:
         生成器，逐块yield文本片段(str)
     """
+    requested_model = model  # None = 跟随端点的模型名
     model = model or config.MODEL_NAME
+    endpoints = _available_endpoints()
 
     for attempt in range(max_retries):
+        ep = endpoints[attempt % len(endpoints)]
+        produced = False  # 已经吐字就不能换端点重来，否则内容会重复
         budget.check("LLM流式调用")  # 超预算立即中止，不开始新的长生成
         try:
-            stream = client.chat.completions.create(
-                model=model,
+            stream = _endpoint_client(ep).chat.completions.create(
+                model=requested_model or ep["model"],
                 messages=messages,
                 temperature=temperature,
                 stream=True,
             )
             for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
+                    produced = True
                     yield chunk.choices[0].delta.content
+            _mark_ok(ep)
             return  # 正常结束
         except budget.BudgetExceededError:
             raise  # 预算耗尽不重试
         except Exception as e:
+            if produced:
+                raise RuntimeError(
+                    f"流式输出中断（已输出部分内容，不能切换端点重来）: {e}")
+            multi = len(endpoints) > 1
+            if _is_hint(e, _AUTH_HINTS):
+                if multi:
+                    print(f"[llm_client] {ep['name']}端点鉴权失败: {e}，切换备用端点")
+                    usage_stats["failovers"] += 1
+                    continue
+                raise
+            if multi and _is_hint(e, _CONGEST_HINTS):
+                _mark_down(ep)
+                usage_stats["failovers"] += 1
+                print(f"[llm_client] {ep['name']}端点拥塞(流式)，切换备用端点")
+                time.sleep(1)
+                continue
             wait = 2 ** (attempt + 1)
             print(f"[llm_client] 流式调用失败(第{attempt + 1}次): {e}，{wait}秒后重试...")
             time.sleep(wait)
@@ -332,6 +423,7 @@ def print_usage():
     print("📊 LLM 用量统计")
     print(f"  真实API调用:    {usage_stats['total_calls']} 次")
     print(f"  缓存命中省下:   {usage_stats['cache_hits']} 次")
+    print(f"  端点自动切换:   {usage_stats['failovers']} 次")
     print(f"  输入token总量:  {usage_stats['total_prompt_tokens']}")
     print(f"  输出token总量:  {usage_stats['total_completion_tokens']}")
     print("=" * 50)
