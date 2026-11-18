@@ -409,8 +409,7 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
           </details>
         </div>
         <div class="tabs">
-          <button data-tab="report" class="on">📝 综述报告</button>
-          <button data-tab="search">🔍 检索结果</button>
+          <button data-tab="search" class="on">🔍 检索结果</button>
           <button data-tab="cards">📄 信息卡片</button>
           <button data-tab="review">✅ 核验明细</button>
           <button data-tab="qa">💬 可信问答</button>
@@ -423,8 +422,7 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
           <button data-tab="compare">⚔️ 对比阅读</button>
           <button data-tab="guide">📖 新手指南</button>
         </div>
-        <div class="tab-body" id="tab-report"><div class="md"></div></div>
-        <div class="tab-body hidden" id="tab-search"></div>
+        <div class="tab-body" id="tab-search"></div>
         <div class="tab-body hidden" id="tab-cards"></div>
         <div class="tab-body hidden" id="tab-review"></div>
         <div class="tab-body hidden" id="tab-qa"></div>
@@ -614,7 +612,7 @@ $("#btn-cancel").onclick = async () => {
 let CUR = null;                 // {tid, t, r} 当前任务与产物
 let qaHistory = [], qaPool = null, qaPoolLoaded = false, qaInited = false;
 let assistHistory = [], assistInited = false;
-let surveyText = "", plainText = "";
+let surveyText = "";
 let searchSort = 0, chatScroll = null;
 const SORTS = ["🎯 综合推荐", "🤖 相关优先", "🔥 经典优先", "🆕 最新优先"];
 const CLAIM_TC = {method: "🔵 方法", result: "🟢 结果", limitation: "🟠 局限"};
@@ -666,9 +664,9 @@ async function showResult(id, t) {
   // 重置各标签页会话状态
   qaHistory = []; qaPool = null; qaPoolLoaded = false; qaInited = false;
   assistHistory = []; assistInited = false;
-  surveyText = ""; plainText = ""; searchSort = 0; EVLOOKUP = {};
+  surveyText = ""; searchSort = 0; EVLOOKUP = {};
 
-  renderReport(); renderSearch(); renderCards(); renderReview();
+  renderSearch(); renderCards(); renderReview();
   renderSurvey(); renderConflicts(); renderTable(); renderGraph(); renderGuide();
 
   // 统计条
@@ -691,47 +689,7 @@ async function showResult(id, t) {
   }
 }
 
-/* ---- 标签: 综述报告（导读 + 小白解读 + 三格式导出） ---- */
-function renderReport() {
-  const {tid, t, r} = CUR;
-  $("#tab-report").innerHTML = `
-    <details class="expander"><summary>📖 如何阅读这份报告？（第一次看请点开）</summary>
-      <div class="exp-body"><b>这是一份什么文档？</b> 文献综述=某个研究领域的"地图"：
-      它不发明新东西，而是把多篇论文的观点<b>系统梳理</b>给你看。<br><br>
-      <b>典型结构与读法</b>: ① 背景部分（领域在解决什么问题）→ ② 方法分类（现有方案分几派）
-      → ③ 对比与结论（效果差异、适用场景）→ ④ 局限性（未解决的问题，往往是选题金矿）。<br><br>
-      <b>可信度说明</b>: 报告只使用了<b>通过两级核验的声明</b>（程序查引用真伪 + AI查语义曲解），
-      每条关键信息理论上都可回溯到PDF原文——这是它和"让ChatGPT直接写综述"的本质区别。</div></details>
-    <div class="tool-row">
-      <button class="act-btn" id="btn-plain">🍼 生成小白解读</button>
-      ${r.report ? `<button class="act-btn ghost" id="btn-dl-md">⬇️ Markdown</button>
-      <a class="act-btn ghost" href="/api/tasks/${tid}/export/docx${pwq()}">⬇️ Word (.docx)</a>
-      <a class="act-btn ghost" href="/api/tasks/${tid}/export/latex${pwq()}">⬇️ LaTeX+BibTeX (.zip)</a>` : ""}
-    </div>
-    <div id="plain-box" class="gen-box hidden"></div>
-    ${r.report ? `<div class="md">${marked.parse(r.report)}</div>`
-               : `<div class="empty">没有报告（任务${stateText(t.state)}）</div>`}`;
-  const bp = $("#btn-plain");
-  if (bp) bp.onclick = genPlain;
-  const dm = $("#btn-dl-md");
-  if (dm) dm.onclick = () => downloadText("literature_review.md", CUR.r.report);
-}
-
-async function genPlain() {
-  const box = $("#plain-box"), btn = $("#btn-plain");
-  box.classList.remove("hidden");
-  btn.disabled = true;
-  box.innerHTML = '<div class="chat-hint">⏳ 正在生成… 下方文字逐步出现（讲解详尽，可能需要数分钟）</div>';
-  plainText = "";
-  try {
-    await streamText(`/api/tasks/${CUR.tid}/plain`, {}, c => {
-      plainText += c;
-      box.innerHTML = `<div class="chat-hint">⏳ 生成中…（重新点击按钮可重新生成）</div><div class="md">${marked.parse(plainText)}</div>`;
-    });
-    box.innerHTML = `<div class="chat-hint">✅ 小白解读已生成</div><div class="md">${marked.parse(plainText)}</div>`;
-  } catch (e) { box.innerHTML = `<div class="chat-hint">生成失败: ${esc(e.message)}</div>`; }
-  btn.disabled = false;
-}
+/* ---- 标签: 综述报告已按需求移除（综述总结保留） ---- */
 
 /* ---- 标签: 检索结果（排序 + 徽章 + 四路信号分解） ---- */
 function norm(s) { return (s || "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, ""); }
@@ -1181,18 +1139,17 @@ const GUIDE_MD = `## 欢迎使用本系统 —— 3分钟看懂它是做什么�
 
 ### 🗺️ 标签页导读
 
-1. **📝 综述报告** — 综述正文。看不懂？点"🍼 生成小白解读"，系统会把报告转写成通俗易懂的版本；还支持 Markdown / Word / LaTeX 三格式导出。
-2. **🔍 检索结果** — 系统找到了哪些论文？为什么这篇排前面？徽章含义：\`🔗引用链经典\`=被多篇论文共同引用的奠基之作；\`🔥高被引\`=学术界公认有影响力；\`🤖高度切题\`=与你的主题最匹配。可展开"四路信号召回分解"看透明化打分。
-3. **💬 可信问答** — 直接用中文提问！系统只根据已核验的内容回答，**证据不够时宁可拒绝回答也不编造**——这是和普通AI对话最大的区别。
-4. **🤖 AI助手** — 任何疑问直接问：系统怎么用、指标什么含义、论文里某个方法的效果，它都能答。
-5. **📚 综述总结** — 叙述性综述（研究故事）+ AI观点（按"现有XX方法在XX场景具备XX优势，但普遍存在XX局限…"句式归纳研究缺口，适合找选题，仅供参考）。
-6. **📄 信息卡片** — 每篇论文被拆成了哪些知识点（声明）？🔵=方法、🟢=实验结果、🟠=局限性说明；每条声明旁有📎证据可跳PDF原文。
-7. **✅ 核验明细** — 哪些声明通过了核实？哪些被剔除、为什么？（被剔除≠论文差，只是那条表述与原文对不上）附Benchmark评测。
-8. **⚡ 矛盾与张力** — 论文之间打架了？🔴=正面对立，🟡=表面冲突（实验条件不同导致的）。
-9. **📊 综述表格** — 各论文的方法横向对比表。
-10. **🕸 引用图谱** — 论文之间谁引用谁的关系网（可拖拽交互）。
-11. **📚 论文原文** — 网页内直接阅读PDF全文，含 🔍 全文搜索（跨所有本地论文）、📝 阅读笔记、📖 核心名词速查。
-12. **⚔️ 对比阅读** — 挑两篇论文并排对比：背景/方法/结论/争议点一屏看清。
+1. **🔍 检索结果** — 系统找到了哪些论文？为什么这篇排前面？徽章含义：\`🔗引用链经典\`=被多篇论文共同引用的奠基之作；\`🔥高被引\`=学术界公认有影响力；\`🤖高度切题\`=与你的主题最匹配。可展开"四路信号召回分解"看透明化打分。
+2. **💬 可信问答** — 直接用中文提问！系统只根据已核验的内容回答，**证据不够时宁可拒绝回答也不编造**——这是和普通AI对话最大的区别。
+3. **🤖 AI助手** — 任何疑问直接问：系统怎么用、指标什么含义、论文里某个方法的效果，它都能答。
+4. **📚 综述总结** — 叙述性综述（研究故事）+ AI观点（按"现有XX方法在XX场景具备XX优势，但普遍存在XX局限…"句式归纳研究缺口，适合找选题，仅供参考）。
+5. **📄 信息卡片** — 每篇论文被拆成了哪些知识点（声明）？🔵=方法、🟢=实验结果、🟠=局限性说明；每条声明旁有📎证据可跳PDF原文。
+6. **✅ 核验明细** — 哪些声明通过了核实？哪些被剔除、为什么？（被剔除≠论文差，只是那条表述与原文对不上）附Benchmark评测。
+7. **⚡ 矛盾与张力** — 论文之间打架了？🔴=正面对立，🟡=表面冲突（实验条件不同导致的）。
+8. **📊 综述表格** — 各论文的方法横向对比表。
+9. **🕸 引用图谱** — 论文之间谁引用谁的关系网（可拖拽交互）。
+10. **📚 论文原文** — 网页内直接阅读PDF全文，含 🔍 全文搜索（跨所有本地论文）、📝 阅读笔记、📖 核心名词速查。
+11. **⚔️ 对比阅读** — 挑两篇论文并排对比：背景/方法/结论/争议点一屏看清。
 
 ### 🎯 检索模式
 
@@ -1223,7 +1180,7 @@ const GUIDE_MD = `## 欢迎使用本系统 —— 3分钟看懂它是做什么�
 
 1. 左侧输入主题（**写具体些**，如"脉冲神经网络的高效训练方法"而不是"神经网络"）→ 点 **开始综述**
 2. 等待10-15分钟（系统在检索+精读+核查，日志会显示进度）
-3. 先看 **📝 综述报告**（可点"🍼 生成小白解读"），有疑问去 **💬 可信问答** 直接提问`;
+3. 先看 **📚 综述总结**，有疑问去 **💬 可信问答** 直接提问，想验证结论去 **✅ 核验明细** 点📎证据回溯原文`;
 function renderGuide() {
   $("#tab-guide").innerHTML = `<div class="md">${marked.parse(GUIDE_MD)}</div>`;
 }
