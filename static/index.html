@@ -326,6 +326,36 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
   header { flex-wrap: wrap; }
   .tab-body { max-height: none; }
 }
+
+/* ---- P0-2 判决书卡片视图 ---- */
+.view-toggle { display: flex; gap: 0; margin: 6px 0 12px; border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; width: fit-content; }
+.vt-btn { border: none; background: var(--card); color: var(--slate); padding: 7px 16px;
+  font-size: 12.5px; cursor: pointer; font-family: inherit; }
+.vt-btn.on { background: var(--brand-lt); color: var(--brand); font-weight: 600; }
+.vc-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; }
+.vc-toolbar select { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+  font-size: 12.5px; background: var(--card); color: var(--ink); font-family: inherit; }
+.vc-stats { font-size: 12px; color: var(--muted); margin-left: auto; }
+.vcard { border: 1px solid var(--border); border-left: 5px solid var(--green);
+  border-radius: 10px; padding: 14px 16px; margin: 10px 0; background: var(--card);
+  box-shadow: var(--shadow); }
+.vhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.vbadge { font-weight: 700; font-size: 12px; border-radius: 999px; padding: 3px 12px; }
+.veid { font-family: monospace; font-size: 11.5px; color: var(--muted); }
+.vpaper { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 420px; }
+.vclaim { font-size: 13.5px; line-height: 1.6; margin: 6px 0 10px; color: var(--ink); }
+.vlvl { background: var(--bg); border-radius: 6px; padding: 8px 10px; font-size: 12.5px;
+  margin: 4px 0; line-height: 1.55; color: var(--slate); }
+.vlvl b { color: var(--ink); }
+.vlvl code, .vfact code, .vquote code { font-size: 11px; }
+.vimg-cap { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.vimg-wrap img { width: 100%; border: 1px solid var(--border); border-radius: 6px; }
+.vfact, .vquote { font-size: 12px; color: var(--slate); margin: 3px 0; line-height: 1.5; }
+.vquote { border-left: 3px solid var(--border); padding-left: 8px; }
+.vmiss { font-size: 12px; color: var(--amber); background: var(--amber-lt);
+  border-radius: 6px; padding: 6px 10px; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -814,11 +844,160 @@ async function showEvidence(arxivId, idx) {
   mb.innerHTML = h;
 }
 
-/* ---- 标签: 核验明细（两级核验 + Benchmark + 详情展开） ---- */
+/* ---- 标签: 核验明细（表格/判决书卡片双视图 + Benchmark + 详情展开） ---- */
+let reviewView = "table";                       // "table" | "cards"
+let reviewFilter = { bucket: "all", paper: "all" };
+
+/* 判定桶口径与 Streamlit 版 _verdict_bucket 一致:
+   llm_error且非幻觉→核验失败 / hallucination→剔除 / abstained→暂缓 / 其余→通过 */
+function vcBucket(v) {
+  const sem = (v.verdict && v.verdict.verdict) || "abstained";
+  if ((v.review_status || "ok") === "llm_error" && !v.hallucination) return "error";
+  if (v.hallucination) return "hallucination";
+  if (sem === "abstained") return "abstained";
+  return "supported";
+}
+const VC_META = {
+  supported:     { label: "✅ 核实通过",   color: "var(--green)", bg: "var(--green-lt)" },
+  hallucination: { label: "❌ 幻觉剔除",   color: "var(--red)",   bg: "var(--red-lt)" },
+  abstained:     { label: "⏸️ 证据不足暂缓", color: "var(--amber)", bg: "var(--amber-lt)" },
+  error:         { label: "⚠️ 核验失败",   color: "var(--muted)", bg: "var(--bg)" }
+};
+
+function vcCardHtml(v, paperTitle, quotes) {
+  const b = vcBucket(v), m = VC_META[b];
+  const sem = (v.verdict && v.verdict.verdict) || "abstained";
+  // 第1级: 程序化引用对齐详情
+  const qd = (v.quote_details || []).slice(0, 3).map(d => d.aligned
+    ? `✓ 第${(d.page ?? 0) + 1}页 · 置信度${(d.confidence ?? 0).toFixed(2)}`
+    : `✗ ${esc(d.section || "")}未定位`).join("；");
+  // 第2级: 原子事实拆分
+  const FI = { supported: "✅", unsupported: "❌", contradicted: "⚔️", abstained: "⏸️" };
+  const facts = (v.atomic_facts || []).slice(0, 6).map(f =>
+    `<div class="vfact">${FI[f.verdict] || "•"} <code>${esc(f.verdict)}</code> ${esc((f.fact || "").slice(0, 90))}</div>`).join("");
+  const factsHtml = facts ? `<div class="vlvl"><b>原子事实核验</b>${facts}</div>` : "";
+  // 证据截图: 内嵌卡片（不再藏在弹层）
+  const ev = (CUR.r.evidence || {})[`${v.arxiv_id}#${v.claim_index}`];
+  let evHtml;
+  if (ev && ev.located && ev.image) {
+    evHtml = `<div class="vimg-wrap">
+      <img src="/api/evidence-img/${encodeURIComponent(ev.image)}${pwq()}"
+           alt="PDF高亮页" loading="lazy"
+           onerror="this.parentNode.innerHTML='<div class=\\'vmiss\\'>⚠️ 证据图片加载失败（服务器重启后 evidence/ 会清空）</div>'">
+      <div class="vimg-cap">📎 ${esc(ev.pdf || v.arxiv_id)} 第${(ev.page ?? 0) + 1}页 · 黄色高亮=证据原文 · 匹配级别 ${esc(ev.match_level || "?")}</div></div>`;
+  } else if (ev && ev.located) {
+    evHtml = `<div class="vmiss">⚠️ 证据图片缺失（服务器重启后 evidence/ 目录会清空）</div>`;
+  } else if (ev) {
+    evHtml = `<div class="vmiss">引用未能在PDF中定位（无截图）</div>`;
+  } else {
+    evHtml = `<div class="vmiss">该声明无证据索引（证据截图仅为核验通过的声明生成）</div>`;
+  }
+  // 引用原文
+  const qs = (quotes || []).slice(0, 3).map(q =>
+    `<div class="vquote"><code>${esc(q.section || "")}</code> ${esc((q.text || "").slice(0, 160))}</div>`).join("");
+  const quotesHtml = qs ? `<div class="vlvl"><b>引用原文</b>${qs}</div>` : "";
+  return `<div class="vcard" style="border-left-color:${m.color}">
+    <div class="vhead">
+      <span class="vbadge" style="background:${m.bg};color:${m.color}">${m.label}</span>
+      <span class="veid">${esc(v.arxiv_id)}#${v.claim_index}</span>
+      <span class="vpaper">${esc(paperTitle || "")}</span></div>
+    <div class="vclaim">${esc(v.claim_content || "")}</div>
+    <div class="vlvl"><b>第1级 · 程序化引用对齐</b>：${v.quote_alignment ? "✓ 真实" : "✗ 疑似伪造"}
+      ${v.aligned_quote_count != null ? ` · ${v.aligned_quote_count}/${v.quote_count ?? ""}条命中` : ""}
+      ${qd ? `<br><span style="font-size:11px">${qd}</span>` : ""}</div>
+    <div class="vlvl"><b>第2级 · LLM语义核验</b>：<code>${esc(sem)}</code> · 置信度 ${((v.verdict && v.verdict.confidence) ?? 0).toFixed(2)}
+      ${v.verdict && v.verdict.reason ? `<br>${esc(v.verdict.reason)}` : ""}</div>
+    ${factsHtml}
+    ${evHtml}
+    ${quotesHtml}</div>`;
+}
+
+async function exportVerdictCards() {
+  const node = $("#vcards");
+  if (!node) return;
+  const clone = node.cloneNode(true);
+  // 图片转base64 → 导出文件离线自包含
+  for (const im of clone.querySelectorAll("img")) {
+    try {
+      const resp = await fetch(im.src);
+      if (!resp.ok) throw 0;
+      const blob = await resp.blob();
+      im.src = await new Promise(res => {
+        const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob);
+      });
+    } catch (e) { im.parentNode && (im.parentNode.innerHTML = '<div class="vmiss">⚠️ 证据图片未随导出保留</div>'); }
+  }
+  const topic = (CUR.t && CUR.t.topic) || "";
+  const doc = `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>证据判决书 · ${esc(topic)}</title><style>
+body{font-family:"PingFang SC","Microsoft YaHei",sans-serif;max-width:900px;margin:0 auto;padding:24px;background:#f4f6fb;}
+h1{font-size:1.3rem;color:#101828;} .meta{color:#98a2b3;font-size:.85rem;margin-bottom:8px;}
+.vcard{border:1px solid #e4e9f2;border-left:5px solid #047857;border-radius:10px;padding:14px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.05);}
+.vhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;}
+.vbadge{font-weight:700;font-size:12px;border-radius:999px;padding:3px 12px;}
+.veid{font-family:monospace;font-size:11.5px;color:#98a2b3;}
+.vpaper{font-size:11.5px;color:#98a2b3;}
+.vclaim{font-size:13.5px;line-height:1.6;margin:6px 0 10px;color:#101828;}
+.vlvl{background:#f4f6fb;border-radius:6px;padding:8px 10px;font-size:12.5px;margin:4px 0;line-height:1.55;color:#475569;}
+.vlvl b{color:#101828;} .vlvl code,.vfact code,.vquote code{font-size:11px;}
+.vimg-cap{font-size:11px;color:#98a2b3;margin-top:4px;}
+.vimg-wrap img{width:100%;border:1px solid #e4e9f2;border-radius:6px;}
+.vfact,.vquote{font-size:12px;color:#475569;margin:3px 0;line-height:1.5;}
+.vquote{border-left:3px solid #e4e9f2;padding-left:8px;}
+.vmiss{font-size:12px;color:#b45309;background:#fef3c7;border-radius:6px;padding:6px 10px;margin-top:10px;}
+</style></head><body><h1>📋 证据判决书 · ${esc(topic)}</h1>
+<div class="meta">文献综述 Agent 两级防幻觉核验产出 · 生成于 ${new Date().toLocaleString("zh-CN")}</div>
+${clone.innerHTML}</body></html>`;
+  const url = URL.createObjectURL(new Blob([doc], { type: "text/html" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = "evidence_cards.html"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function renderVerdictCards(revRows) {
+  const r = CUR.r;
+  // 论文标题 / 声明引用原文索引
+  const titleOf = {}, quotesOf = {};
+  (Array.isArray(r.cards) ? r.cards : []).forEach(c => {
+    titleOf[c.arxiv_id] = c.title;
+    (c.claims || []).forEach((cl, i) => { quotesOf[`${c.arxiv_id}#${i}`] = cl.quotes; });
+  });
+  const shown = revRows.filter(v =>
+    (reviewFilter.bucket === "all" || vcBucket(v) === reviewFilter.bucket) &&
+    (reviewFilter.paper === "all" || v.arxiv_id === reviewFilter.paper));
+  const stat = {};
+  revRows.forEach(v => { const b = vcBucket(v); stat[b] = (stat[b] || 0) + 1; });
+  const opt = (val, label, cur) => `<option value="${val}"${val === cur ? " selected" : ""}>${label}</option>`;
+  const papers = [...new Set(revRows.map(v => v.arxiv_id))];
+  let html = `<div class="vc-toolbar">
+    <select onchange="reviewFilter.bucket=this.value;renderReview()">
+      ${opt("all", "判定: 全部", reviewFilter.bucket)}
+      ${Object.keys(VC_META).map(k => opt(k, VC_META[k].label.slice(2), reviewFilter.bucket)).join("")}
+    </select>
+    <select onchange="reviewFilter.paper=this.value;renderReview()">
+      ${opt("all", "论文: 全部", reviewFilter.paper)}
+      ${papers.map(p => opt(p, p, reviewFilter.paper)).join("")}
+    </select>
+    <span class="vc-stats">共 ${revRows.length} 条 · 显示 ${shown.length} 条
+      （✅${stat.supported || 0} ❌${stat.hallucination || 0} ⏸️${stat.abstained || 0} ⚠️${stat.error || 0}）</span>
+    <button class="act-btn ghost" onclick="exportVerdictCards()">📤 导出判决书HTML</button></div>`;
+  html += shown.length
+    ? `<div id="vcards">${shown.map(v =>
+        vcCardHtml(v, titleOf[v.arxiv_id], quotesOf[`${v.arxiv_id}#${v.claim_index}`])).join("")}</div>`
+    : '<div class="empty">当前筛选条件下没有声明</div>';
+  return html;
+}
+
 function renderReview() {
   const r = CUR.r;
   const revRows = Array.isArray(r.review) ? r.review : [];
-  let html = "";
+  let html = `<div class="view-toggle">
+    <button class="vt-btn ${reviewView === "table" ? "on" : ""}" onclick="reviewView='table';renderReview()">📋 表格视图</button>
+    <button class="vt-btn ${reviewView === "cards" ? "on" : ""}" onclick="reviewView='cards';renderReview()">🗂 判决书卡片视图</button></div>`;
+  if (reviewView === "cards") {
+    $("#tab-review").innerHTML = html + renderVerdictCards(revRows);
+    return;
+  }
   if (r.benchmark && r.benchmark.verdict_accuracy != null) {
     const b = r.benchmark;
     const pf = b.precision || {}, rc = b.recall || {}, f1 = b.f1 || {};
