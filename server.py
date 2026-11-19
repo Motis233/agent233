@@ -162,14 +162,85 @@ def _read_status() -> dict:
         return {}
 
 
+def _pid_alive(pid: int | None) -> bool:
+    """跨平台判活。Windows 用 OpenProcess+GetExitCodeProcess（os.kill(0) 在
+    Windows 语义不同，误用会直接杀进程），POSIX 用信号0探测。"""
+    if not pid:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            # 64位句柄必须用 c_void_p：默认 c_int 截断会导致句柄无效、
+            # GetExitCodeProcess 静默失败 → 活进程被误判死亡
+            k32.OpenProcess.restype = ctypes.c_void_p
+            k32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+            k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+            h = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                if not k32.GetExitCodeProcess(h, ctypes.byref(exit_code)):
+                    return False  # 查询失败按死亡处理（句柄失效=进程不存在）
+                return exit_code.value == 259  # STILL_ACTIVE
+            finally:
+                k32.CloseHandle(h)
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def _sweep_orphans() -> None:
+    """死亡检测兜底：worker 进程已不存在但任务仍标 running → 立即落终态。
+
+    watcher 线程只在"本服务器进程且其内存句柄存活"时有效——服务器重启、
+    watcher 线程意外退出（如注册表读取瞬时异常触发提前 return）都会留下
+    永远 running 的僵尸任务。此函数挂在轮询接口上，读注册表里的 pid 判活，
+    不依赖任何内存状态。"""
+    try:
+        with _lock:
+            tasks = _load_tasks()
+            changed = False
+            for t in tasks:
+                if t.get("state") != "running":
+                    continue
+                pid = t.get("pid")
+                if pid is None:  # 旧任务未持久化 pid → 退回 worker 写的 pid 文件
+                    try:
+                        pid = int(open(os.path.join(DATA, "pipeline.pid")).read().strip())
+                    except Exception:
+                        pid = None
+                if pid and _pid_alive(pid):
+                    continue
+                was_cancel = bool(t.get("cancel_requested"))
+                _snapshot(t, "cancelled" if was_cancel else "error")
+                t["msg"] = ("已按用户请求终止" if was_cancel
+                            else "worker 进程已退出且未写入终态（崩溃或服务器重启）")
+                changed = True
+            if changed:
+                _save_tasks(tasks)
+    except Exception:
+        pass  # 兜底路径自身绝不能拖垮轮询接口
+
+
 def _watcher(task: dict) -> None:
     """后台线程：跟踪活跃任务直到终态，然后落快照"""
+    misses = 0
     while True:
         time.sleep(1.0)
         tasks = _load_tasks()
         cur = _find(tasks, task["id"])
-        if cur is None:            # 注册表被清空等异常情况
-            return
+        if cur is None:
+            # 注册表瞬时读取失败/被清空 → 连续多次确认后再退出，
+            # 避免一次文件竞态就永久杀死 watcher、留下僵尸任务
+            misses += 1
+            if misses >= 10:
+                return
+            continue
+        misses = 0
         st = _read_status()
         state = st.get("state")
         proc = task.get("_proc")
@@ -222,6 +293,7 @@ async def api_run(request: Request):
     if mode not in ("standard", "mode1", "mode2", "mode3"):
         raise HTTPException(400, f"不支持的检索模式: {mode}")
 
+    _sweep_orphans()          # 先清掉历史僵尸，避免误报"已有任务在运行"
     with _lock:
         tasks = _load_tasks()
         act = _active(tasks)
@@ -244,6 +316,8 @@ async def api_run(request: Request):
         _save_tasks(tasks)
         proc = _spawn(task)
         task["_proc"] = proc          # 仅内存，watcher 用于兜底判活
+        task["pid"] = proc.pid        # 持久化 pid：服务器重启后 _sweep_orphans 仍能判活
+        _save_tasks(tasks)
         _ACTIVE_PROCS[tid] = proc     # 取消接口据此即时终止
     threading.Thread(target=_watcher, args=(task,), daemon=True).start()
     return {"id": tid, "state": "running"}
@@ -252,9 +326,11 @@ async def api_run(request: Request):
 @app.get("/api/tasks")
 async def api_tasks(request: Request):
     _check_auth(request)
+    _sweep_orphans()
     tasks = _load_tasks()
-    return [{"id": t["id"], "topic": t["topic"], "mode": t["mode"],
-             "fast": t.get("fast"), "state": t["state"],
+    return [{"id": t.get("id"), "topic": t.get("topic", ""),
+             "mode": t.get("mode", "standard"),
+             "fast": t.get("fast"), "state": t.get("state", "error"),
              "submitted_at": t.get("submitted_at"),
              "finished_at": t.get("finished_at"),
              "hallucination_rate": t.get("hallucination_rate"),
@@ -264,6 +340,7 @@ async def api_tasks(request: Request):
 @app.get("/api/tasks/{tid}")
 async def api_task(tid: str, request: Request):
     _check_auth(request)
+    _sweep_orphans()
     tasks = _load_tasks()
     t = _find(tasks, tid)
     if not t:
@@ -309,9 +386,18 @@ async def api_cancel(tid: str, request: Request):
         except Exception:
             hard = False                      # 进程句柄异常时退回优雅取消
     _ACTIVE_PROCS.pop(tid, None)
-    msg = ("已即时终止 worker 进程" if hard
-           else "取消标志已置位，将在当前阶段结束后停止")
-    return {"ok": True, "msg": msg, "hard": hard}
+    if hard:
+        # 强杀成功 → 立即落终态，不等 watcher（worker 死在阶段中间时
+        # 状态文件不会有终态，只靠 watcher 会留下僵尸窗口）
+        with _lock:
+            tasks = _load_tasks()
+            cur = _find(tasks, tid)
+            if cur and cur.get("state") == "running":
+                _snapshot(cur, "cancelled")
+                cur["msg"] = "已按用户请求即时终止"
+                _save_tasks(tasks)
+        return {"ok": True, "msg": "已即时终止 worker 进程", "hard": True}
+    return {"ok": True, "msg": "取消标志已置位，将在当前阶段结束后停止", "hard": False}
 
 
 @app.get("/api/tasks/{tid}/stream")
