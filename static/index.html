@@ -378,11 +378,16 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
 .ob-btn:disabled { opacity: .5; cursor: not-allowed; }
 .ob-btn.ghost { background: var(--card); border: 1px solid var(--border); color: var(--slate);
   font-weight: 400; }
-.ob-cloud { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline;
-  padding: 14px; background: var(--bg); border-radius: 8px; margin-bottom: 14px; line-height: 1.9; }
-.ob-word { cursor: pointer; }
-.ob-word:hover { text-decoration: underline; }
-.ob-word.picked { opacity: .45; text-decoration: line-through; }
+.ob-spherewrap { margin-bottom: 14px; }
+.ob-sphere { position: relative; height: 300px; border-radius: 12px;
+  background: radial-gradient(circle at 50% 42%, var(--brand-lt), transparent 70%), var(--bg);
+  overflow: hidden; touch-action: none; cursor: grab; }
+.ob-sphere:active { cursor: grabbing; }
+.ob-word { position: absolute; left: 0; top: 0; white-space: nowrap; cursor: pointer;
+  will-change: transform, opacity; user-select: none; font-weight: 600; }
+.ob-word.picked { text-decoration: line-through; filter: saturate(.4); }
+.ob-word.focus { text-shadow: 0 0 14px currentColor; }
+.ob-spherehint { text-align: center; font-size: 11px; color: var(--muted); margin-top: 6px; }
 .ob-grp { margin-bottom: 12px; }
 .ob-grp b { font-size: 12px; display: block; margin-bottom: 6px; }
 .ob-pill { display: inline-block; border: 1px solid var(--border); border-radius: 999px;
@@ -624,7 +629,68 @@ const OB_CAT = {
 };
 const OB_BAR = ["① 主题画像", "② 词云选词", "③ 确认启动"];
 
-function closeModal() { $("#modal").classList.add("hidden"); }
+function closeModal() { obSphereStop(); $("#modal").classList.add("hidden"); }
+
+/* ---- 3D 词云球：斐波那契球面分布 + 深度投影 + 拖拽/悬停交互 ---- */
+let obRaf = 0;
+function obSphereStop() { if (obRaf) { cancelAnimationFrame(obRaf); obRaf = 0; } }
+function obSphereInit() {
+  obSphereStop();
+  const box = $("#ob-sphere");
+  if (!box) return;
+  const words = [...box.querySelectorAll(".ob-word")];
+  const N = words.length;
+  if (!N) return;
+  const R = Math.max(60, Math.min(box.clientWidth, box.clientHeight) / 2 - 30);
+  // 旋转状态跨重渲染保持（选词后球不跳回初始角度）
+  if (!OB.rot) OB.rot = { rx: 0.35, ry: 0, idle: 0 };
+  const rot = OB.rot;
+  // 斐波那契格点：均匀铺满球面，避免拥挤
+  const pts = words.map((_, i) => {
+    const y = 1 - (i + 0.5) / N, r = Math.sqrt(1 - y * y), th = i * 2.399963;
+    return { x: Math.cos(th) * r, y, z: Math.sin(th) * r };
+  });
+  let drag = null, hover = false;
+  box.onpointerdown = e => { drag = { x: e.clientX, y: e.clientY }; box.setPointerCapture(e.pointerId); };
+  box.onpointerup = () => { drag = null; rot.idle = Date.now(); };
+  box.onpointermove = e => {
+    if (!drag) return;
+    rot.ry += (e.clientX - drag.x) * 0.005;
+    rot.rx = Math.max(-1.2, Math.min(1.2, rot.rx - (e.clientY - drag.y) * 0.005));
+    drag = { x: e.clientX, y: e.clientY };
+  };
+  words.forEach(w => {
+    w.onmouseenter = () => { hover = true; };
+    w.onmouseleave = () => { hover = false; };
+    w.onclick = () => {
+      const i = +w.dataset.i;
+      OB.openTerm = OB.openTerm === i ? -1 : i;
+      obRender();
+    };
+  });
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const frame = () => {
+    if (!$("#ob-sphere")) { obRaf = 0; return; }
+    // 自动旋转：拖拽中/悬停中/刚拖完 1.2 秒内暂停
+    const spin = !reduced && !drag && !hover && Date.now() - (rot.idle || 0) > 1200;
+    if (spin) { rot.ry += 0.0042; rot.rx += Math.sin(rot.ry * 1.7) * 0.0006; }
+    const cx = box.clientWidth / 2, cy = box.clientHeight / 2;
+    const sx = Math.sin(rot.rx), cxo = Math.cos(rot.rx);
+    const sy = Math.sin(rot.ry), cyo = Math.cos(rot.ry);
+    words.forEach((w, i) => {
+      const p = pts[i];
+      const x1 = p.x * cyo + p.z * sy, z1 = -p.x * sy + p.z * cyo;   // 绕Y轴
+      const y2 = p.y * cxo - z1 * sx, z2 = p.y * sx + z1 * cxo;      // 绕X轴
+      const depth = (z2 + 2) / 3;                                    // 0.33(远)~1(近)
+      w.style.transform = `translate(-50%,-50%) translate(${(cx + x1 * R).toFixed(1)}px,${(cy + y2 * R).toFixed(1)}px) scale(${(0.55 + depth * 0.65).toFixed(3)})`;
+      w.style.opacity = (0.3 + depth * 0.7).toFixed(2);
+      w.style.zIndex = Math.round(depth * 100);
+    });
+    obRaf = requestAnimationFrame(frame);
+  };
+  frame();
+}
+
 function openObWizard() {
   OB.step = 1; OB.topic = $("#topic").value.trim(); OB.glossary = null;
   OB.sel = new Set(); OB.openTerm = -1; OB.loading = false; OB.final = null;
@@ -643,6 +709,7 @@ function obSelHtml(id, opts, cur, onchange) {
 function obRender() {
   const el = $("#ob-body");
   if (!el) return;
+  if (OB.step !== 2) obSphereStop();
   if (OB.step === 1) {
     el.innerHTML = `${obBar()}
       <div class="ob-field"><label>研究主题</label>
@@ -665,9 +732,9 @@ function obRender() {
   if (OB.step === 2) {
     const terms = OB.glossary.terms;
     const cloud = terms.map((t, i) =>
-      `<span class="ob-word ${OB.sel.has(i) ? "picked" : ""}" style="color:${OB_CAT[t.category].color};
-        font-size:${Math.round(12 + t.weight * 1.1)}px" onclick="OB.openTerm=${OB.openTerm === i ? -1 : i};obRender()"
-        title="${esc(t.term_en)}">${esc(t.term_zh)}</span>`).join("");
+      `<span class="ob-word ${OB.sel.has(i) ? "picked" : ""} ${OB.openTerm === i ? "focus" : ""}"
+        data-i="${i}" style="color:${OB_CAT[t.category].color};font-size:${Math.round(12 + t.weight)}px"
+        title="${esc(t.term_en)} · 相关度${t.weight}">${esc(t.term_zh)}</span>`).join("");
     const groups = Object.keys(OB_CAT).map(c => {
       const list = terms.map((t, i) => ({ t, i })).filter(x => x.t.category === c)
         .sort((a, b) => b.t.weight - a.t.weight);
@@ -689,11 +756,15 @@ function obRender() {
       : `<div class="ob-termcard">👆 点击任意词查看解释，选中后将与主题一起进入检索规划</div>`;
     const chips = [...OB.sel].map(i => `<span class="ob-chip">${esc(terms[i].term_zh)}</span>`).join("");
     el.innerHTML = `${obBar()}
-      <div class="ob-cloud">${cloud}</div>${card}${groups}
+      <div class="ob-spherewrap">
+        <div class="ob-sphere" id="ob-sphere">${cloud}</div>
+        <div class="ob-spherehint">🖱 拖拽旋转 · 悬停暂停 · 点击词看解释 · 划线=已选</div>
+      </div>${card}${groups}
       <div class="ob-chips">${OB.sel.size ? `已选 ${OB.sel.size} 个：${chips}` : "未选词也可继续（仅用主题检索）"}</div>
       <div class="ob-actions">
         <button class="ob-btn ghost" onclick="OB.step=1;OB.error='';obRender()">← 上一步</button>
         <button class="ob-btn" onclick="OB.step=3;obEnterConfirm()">下一步：确认启动 →</button></div>`;
+    obSphereInit();
     return;
   }
   // step 3
