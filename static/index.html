@@ -356,6 +356,47 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
 .vquote { border-left: 3px solid var(--border); padding-left: 8px; }
 .vmiss { font-size: 12px; color: var(--amber); background: var(--amber-lt);
   border-radius: 6px; padding: 6px 10px; margin-top: 10px; }
+
+/* ---- 检索前引导（词云向导） ---- */
+#btn-ob { width: 100%; margin-top: 10px; background: var(--card); border: 1px solid var(--border);
+  color: var(--brand); border-radius: 10px; padding: 10px 12px; font-size: 13px;
+  cursor: pointer; font-family: inherit; }
+#btn-ob:hover { border-color: var(--brand); background: var(--brand-lt); }
+.ob-stepbar { display: flex; gap: 6px; margin-bottom: 14px; }
+.ob-step { flex: 1; text-align: center; font-size: 11.5px; color: var(--muted);
+  padding: 5px 2px; border-radius: 6px; background: var(--bg); }
+.ob-step.on { background: var(--brand-lt); color: var(--brand); font-weight: 600; }
+.ob-field { margin-bottom: 12px; }
+.ob-field label { display: block; font-size: 12px; color: var(--slate); margin-bottom: 5px; }
+.ob-field textarea, .ob-field select, .ob-field input { width: 100%; border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit;
+  background: var(--card); color: var(--ink); }
+.ob-field textarea { min-height: 56px; resize: vertical; }
+.ob-actions { display: flex; gap: 8px; margin-top: 14px; }
+.ob-btn { border: none; background: var(--brand-grad); color: #fff; border-radius: 10px;
+  padding: 10px 16px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.ob-btn:disabled { opacity: .5; cursor: not-allowed; }
+.ob-btn.ghost { background: var(--card); border: 1px solid var(--border); color: var(--slate);
+  font-weight: 400; }
+.ob-cloud { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline;
+  padding: 14px; background: var(--bg); border-radius: 8px; margin-bottom: 14px; line-height: 1.9; }
+.ob-word { cursor: pointer; }
+.ob-word:hover { text-decoration: underline; }
+.ob-word.picked { opacity: .45; text-decoration: line-through; }
+.ob-grp { margin-bottom: 12px; }
+.ob-grp b { font-size: 12px; display: block; margin-bottom: 6px; }
+.ob-pill { display: inline-block; border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 11px; margin: 0 6px 6px 0; font-size: 12.5px; cursor: pointer;
+  background: var(--card); color: var(--ink); }
+.ob-pill.on { border-color: currentColor; font-weight: 600; background: var(--brand-lt); }
+.ob-termcard { background: var(--bg); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;
+  line-height: 1.6; color: var(--slate); margin-bottom: 12px; }
+.ob-termcard b { color: var(--ink); }
+.ob-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.ob-chip { background: var(--brand-lt); color: var(--brand); border-radius: 999px;
+  padding: 2px 10px; font-size: 11.5px; }
+.ob-preview { background: var(--bg); border-radius: 8px; padding: 10px 12px; font-size: 12.5px;
+  color: var(--slate); margin-bottom: 12px; line-height: 1.6; }
 </style>
 </head>
 <body>
@@ -393,6 +434,7 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
         <div class="form-row">
           <label class="checkbox"><input type="checkbox" id="fast"> 快速模式（跳过引用链与矛盾检测，约3分钟）</label>
         </div>
+        <button id="btn-ob" type="button">🧭 智能引导（生成词云·新手推荐）</button>
         <button id="btn-run">开始综述</button>
         <div id="btn-cancel-wrap" class="hidden" style="display:flex;margin-top:8px">
           <button id="btn-cancel">终止当前任务</button>
@@ -561,6 +603,147 @@ $("#btn-run").onclick = async () => {
   } catch (e) { toast(e.message); }
   $("#btn-run").disabled = false;
 };
+
+/* ---------------- 检索前引导（词云向导） ---------------- */
+const OB = { step: 1, topic: "", identity: "硕士生", stage: "入门了解", focus: "",
+             glossary: null, sel: new Set(), openTerm: -1, loading: false,
+             final: null };
+const OB_STAGES = ["入门了解", "开题调研", "正式综述", "追前沿", "交叉探索"];
+const OB_PRESET = {
+  "入门了解": { mode: "mode1", fast: true,  top_k: 5,  years: 2 },
+  "开题调研": { mode: "standard", fast: false, top_k: 8,  years: 2 },
+  "正式综述": { mode: "standard", fast: false, top_k: 10, years: 3 },
+  "追前沿":   { mode: "mode2", fast: false, top_k: 5,  years: 2 },
+  "交叉探索": { mode: "mode3", fast: false, top_k: 8,  years: 5 }
+};
+const OB_CAT = {
+  core:        { label: "核心概念 · 它是什么", color: "#2563EB" },
+  method:      { label: "方法技术 · 怎么做的", color: "#047857" },
+  application: { label: "应用场景 · 用在哪里", color: "#D97706" },
+  background:  { label: "背景知识 · 为什么重要", color: "#7C3AED" }
+};
+const OB_BAR = ["① 主题画像", "② 词云选词", "③ 确认启动"];
+
+function closeModal() { $("#modal").classList.add("hidden"); }
+function openObWizard() {
+  OB.step = 1; OB.topic = $("#topic").value.trim(); OB.glossary = null;
+  OB.sel = new Set(); OB.openTerm = -1; OB.loading = false; OB.final = null;
+  $("#modal-box").innerHTML = '<div id="ob-body"></div>';
+  $("#modal").classList.remove("hidden");
+  obRender();
+}
+function obBar() {
+  return `<div class="ob-stepbar">${OB_BAR.map((s, i) =>
+    `<div class="ob-step ${OB.step === i + 1 ? "on" : ""}">${s}</div>`).join("")}</div>`;
+}
+function obSelHtml(id, opts, cur, onchange) {
+  return `<select onchange="${onchange}">${opts.map(o =>
+    `<option value="${o}"${o === cur ? " selected" : ""}>${o}</option>`).join("")}</select>`;
+}
+function obRender() {
+  const el = $("#ob-body");
+  if (!el) return;
+  if (OB.step === 1) {
+    el.innerHTML = `${obBar()}
+      <div class="ob-field"><label>研究主题</label>
+        <textarea id="ob-topic" placeholder="例如：脉冲神经网络的高效训练方法">${esc(OB.topic)}</textarea></div>
+      <div class="ob-field"><label>你的身份（影响术语解释的讲法）</label>
+        ${obSelHtml("ob-id", ["本科生", "硕士生", "博士生", "研究者", "工程师"], OB.identity, "OB.identity=this.value")}</div>
+      <div class="ob-field"><label>当前阶段（决定检索预设）</label>
+        ${obSelHtml("ob-stage", OB_STAGES, OB.stage, "OB.stage=this.value")}</div>
+      <div class="ob-field"><label>关注侧重（可选）</label>
+        <input id="ob-focus" value="${esc(OB.focus)}" placeholder="例如：关注硬件实现"
+               oninput="OB.focus=this.value"></div>
+      <div class="ob-actions">
+        <button class="ob-btn" id="ob-gen" onclick="obGenerate()"
+                ${OB.loading ? "disabled" : ""}>${OB.loading ? "🪄 生成中…（约15秒）" : "🪄 生成引导词云"}</button>
+        <button class="ob-btn ghost" onclick="closeModal()">跳过引导</button></div>
+      ${OB.error ? `<div class="ob-preview">⚠️ ${esc(OB.error)}——可直接跳过引导，用左侧表单检索</div>` : ""}`;
+    if (!OB.loading) $("#ob-topic").value = OB.topic;
+    return;
+  }
+  if (OB.step === 2) {
+    const terms = OB.glossary.terms;
+    const cloud = terms.map((t, i) =>
+      `<span class="ob-word ${OB.sel.has(i) ? "picked" : ""}" style="color:${OB_CAT[t.category].color};
+        font-size:${Math.round(12 + t.weight * 1.1)}px" onclick="OB.openTerm=${OB.openTerm === i ? -1 : i};obRender()"
+        title="${esc(t.term_en)}">${esc(t.term_zh)}</span>`).join("");
+    const groups = Object.keys(OB_CAT).map(c => {
+      const list = terms.map((t, i) => ({ t, i })).filter(x => x.t.category === c)
+        .sort((a, b) => b.t.weight - a.t.weight);
+      if (!list.length) return "";
+      return `<div class="ob-grp"><b style="color:${OB_CAT[c].color}">${OB_CAT[c].label}</b>
+        ${list.map(x => `<span class="ob-pill ${OB.sel.has(x.i) ? "on" : ""}"
+          style="color:${OB.sel.has(x.i) ? OB_CAT[c].color : "inherit"}"
+          onclick="OB.sel.has(${x.i})?OB.sel.delete(${x.i}):OB.sel.add(${x.i});OB.openTerm=${x.i};obRender()">
+          ${esc(x.t.term_zh)} ${esc(x.t.term_en)}</span>`).join("")}</div>`;
+    }).join("");
+    const t = OB.openTerm >= 0 ? terms[OB.openTerm] : null;
+    const card = t ? `<div class="ob-termcard">
+        <b>${esc(t.term_zh)} · ${esc(t.term_en)}</b>
+        <span style="color:${OB_CAT[t.category].color}">［${OB_CAT[t.category].label.split(" · ")[0]} · 相关度 ${t.weight}/10］</span><br>
+        ${esc(t.explanation)}<br>
+        <button class="ob-btn" style="padding:5px 12px;font-size:12px;margin-top:6px"
+          onclick="OB.sel.has(${OB.openTerm})?OB.sel.delete(${OB.openTerm}):OB.sel.add(${OB.openTerm});obRender()">
+          ${OB.sel.has(OB.openTerm) ? "✓ 已加入检索词（点击移除）" : "＋ 加入检索词"}</button></div>`
+      : `<div class="ob-termcard">👆 点击任意词查看解释，选中后将与主题一起进入检索规划</div>`;
+    const chips = [...OB.sel].map(i => `<span class="ob-chip">${esc(terms[i].term_zh)}</span>`).join("");
+    el.innerHTML = `${obBar()}
+      <div class="ob-cloud">${cloud}</div>${card}${groups}
+      <div class="ob-chips">${OB.sel.size ? `已选 ${OB.sel.size} 个：${chips}` : "未选词也可继续（仅用主题检索）"}</div>
+      <div class="ob-actions">
+        <button class="ob-btn ghost" onclick="OB.step=1;OB.error='';obRender()">← 上一步</button>
+        <button class="ob-btn" onclick="OB.step=3;obEnterConfirm()">下一步：确认启动 →</button></div>`;
+    return;
+  }
+  // step 3
+  const f = OB.final, names = [...OB.sel].map(i => OB.glossary.terms[i].term_zh);
+  const finalTopic = OB.topic + (names.length ? `（重点关注：${names.join("；")}）` : "");
+  el.innerHTML = `${obBar()}
+    <div class="ob-preview"><b>最终检索主题</b><br>${esc(finalTopic)}
+      ${OB.focus ? `<br>关注侧重：${esc(OB.focus)}` : ""}</div>
+    <div class="ob-field"><label>检索模式（已按「${esc(OB.stage)}」预设，可修改）</label>
+      <select id="ob-fmode">
+        ${[["standard", "📌 标准（推荐）"], ["mode1", "🌱 入门综述模式"], ["mode2", "🚀 前沿突破模式"], ["mode3", "🔀 交叉领域模式"]]
+          .map(([v, l]) => `<option value="${v}"${f.mode === v ? " selected" : ""}>${l}</option>`).join("")}
+      </select></div>
+    <div class="ob-field"><label>篇数</label>
+      <input id="ob-fk" type="number" value="${f.top_k}" min="3" max="20"></div>
+    <div class="ob-field"><label>年限</label>
+      <input id="ob-fy" type="number" value="${f.years}" min="1" max="10"></div>
+    <div class="ob-field"><label class="checkbox"><input type="checkbox" id="ob-ffast" ${f.fast ? "checked" : ""}> 快速模式（跳过引用链与矛盾检测）</label></div>
+    <div class="ob-actions">
+      <button class="ob-btn ghost" onclick="OB.step=2;obRender()">← 返回选词</button>
+      <button class="ob-btn" onclick="obStartRun()">🚀 开始检索</button></div>`;
+}
+function obEnterConfirm() {
+  OB.final = { ...(OB_PRESET[OB.stage] || OB_PRESET["开题调研"]) };
+  obRender();
+}
+async function obGenerate() {
+  OB.topic = $("#ob-topic").value.trim();
+  if (!OB.topic) { OB.error = "请先输入研究主题"; obRender(); return; }
+  OB.loading = true; OB.error = ""; obRender();
+  try {
+    OB.glossary = await api("/api/glossary", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic: OB.topic, identity: OB.identity, stage: OB.stage })
+    });
+    OB.step = 2; OB.openTerm = -1;
+  } catch (e) { OB.error = e.message || "词云生成失败"; }
+  OB.loading = false; obRender();
+}
+function obStartRun() {
+  const names = [...OB.sel].map(i => OB.glossary.terms[i].term_zh);
+  $("#topic").value = OB.topic + (names.length ? `（重点关注：${names.join("；")}）` : "");
+  $("#mode").value = $("#ob-fmode").value;
+  $("#top_k").value = $("#ob-fk").value;
+  $("#years").value = $("#ob-fy").value;
+  $("#fast").checked = $("#ob-ffast").checked;
+  closeModal();
+  $("#btn-run").click();
+}
+$("#btn-ob").onclick = openObWizard;
 
 /* ---------------- 选中任务 ---------------- */
 function selectTask(id) {

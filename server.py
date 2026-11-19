@@ -37,6 +37,7 @@ import config
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 BASE = config.PROJECT_ROOT
 DATA = config.DATA_DIR
@@ -933,6 +934,62 @@ async def api_export(tid: str, fmt: str, request: Request):
 @app.get("/api/health")
 async def api_health():
     return {"ok": True, "app_password": bool(getattr(config, "APP_PASSWORD", ""))}
+
+
+class GlossaryReq(BaseModel):
+    topic: str
+    identity: str = "研究生"
+    stage: str = "入门了解"
+
+
+@app.post("/api/glossary")
+def api_glossary(req: GlossaryReq, request: Request):
+    """检索前引导：为主题生成词云术语卡（含中英名/相关度/类别/一句话释义）。
+
+    复用 llm_client.chat_json 的文件缓存——同主题+身份第二次生成零成本零延迟。
+    """
+    _check_auth(request)
+    topic = (req.topic or "").strip()
+    if not topic:
+        raise HTTPException(400, "topic 不能为空")
+    try:
+        import models as _models
+        import llm_client as _llm
+    except Exception as e:
+        raise HTTPException(500, f"LLM 客户端不可用: {e}")
+    sys.path.insert(0, str(BASE))
+    style_map = {
+        "本科生": "面向零基础本科生：优先使用生活化类比，避免未解释的行话",
+        "硕士生": "面向研究生：可用标准学术词汇，概念需点到定义",
+        "博士生": "面向领域博士：用高密度专业表述，直接给方法论脉络",
+        "研究者": "面向研究者：精确使用领域惯用语与前沿术语",
+        "工程师": "面向工程师：侧重实现与落地视角，如硬件、开销、部署",
+    }
+    style = style_map.get(req.identity, style_map["硕士生"])
+    sys_prompt = (
+        "你是学术导航助手。根据用户的研究主题与画像，生成一份主题词云术语集，帮助用户在正式检索前建立概念地图。"
+        "要求：\n"
+        "1. terms 提供 15~25 个术语，按四类覆盖：core(核心概念/它是什么)、method(方法技术/怎么做的)、"
+        "application(应用场景/用在哪里)、background(背景知识/为什么重要)，每类都要有；\n"
+        "2. weight 为该术语与主题的相关度 1~10，核心概念给 9~10，背景知识给 3~6；\n"
+        "3. term_en 用领域标准英文术语，term_zh 用规范中文译名；\n"
+        "4. explanation 为不超过80字的一句话定义，" + style + "；\n"
+        "5. 只输出术语本身，禁止输出任何文献引用、arXiv编号或作者名。"
+    )
+    user_prompt = f"研究主题：{topic}\n用户阶段：{req.stage}"
+    try:
+        glossary = _llm.chat_json(
+            [{"role": "system", "content": sys_prompt},
+             {"role": "user", "content": user_prompt}],
+            _models.TopicGlossary,
+            temperature=0.5,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"词云生成失败: {e}")
+    return {
+        "topic_en": glossary.topic_en,
+        "terms": [t.model_dump() for t in glossary.terms],
+    }
 
 
 # 静态前端（放在最后，避免吞掉 /api/*）
