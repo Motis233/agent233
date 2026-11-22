@@ -6,6 +6,7 @@ PyMuPDF>=1.28        # PDF解析（模块名 pymupdf）
 arxiv>=4.0           # arXiv论文检索API
 pyvis==0.3.2         # 引用图谱（钉版本保证各平台pyvis HTML行为一致）
 streamlit>=1.63      # Demo网页前端
+fastapi>=0.115       # 新网页任务服务器（server.py；uvicorn/python-multipart随streamlit已装）
 openai>=2.41         # LLM API调用（OpenAI兼容格式）
 pydantic>=2.13       # 结构化数据定义与校验
 python-docx>=1.1     # 综述报告导出Word（app.py与server.py共用exporter.py）
