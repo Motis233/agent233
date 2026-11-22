@@ -63,12 +63,17 @@ def _is_hint(err, hints) -> bool:
     return any(h in s for h in hints)
 
 
-def _available_endpoints():
+def _available_endpoints(apis=None):
     """返回当前可用端点（冷却中的排在后面；全部冷却时仍返回全部，
-    避免因为冷却表把系统卡死在"无端点可用"）。"""
+    避免因为冷却表把系统卡死在"无端点可用"）。
+
+    apis: 端点列表，None = config.LLM_APIS（主生成端点）。
+    核验侧(reviewer)传 config.VERIFIER_APIS 可走独立厂商端点（K1异构核验）。"""
+    if apis is None:
+        apis = config.LLM_APIS
     now = time.time()
     fresh, cooled = [], []
-    for e in config.LLM_APIS:
+    for e in apis:
         (cooled if _down_until.get(_ep_key(e), 0) > now else fresh).append(e)
     return fresh + cooled
 
@@ -108,7 +113,7 @@ def _fingerprint(model: str, temperature: float, messages: list) -> str:
 
 
 def chat(messages, temperature=0.2, model=None, max_retries=None,
-         use_cache=True):
+         use_cache=True, apis=None):
     """
     基础对话函数
 
@@ -122,6 +127,8 @@ def chat(messages, temperature=0.2, model=None, max_retries=None,
                    同样的输入直接返回上次输出，零耗时零花费。
                    chat_json内部调用本函数时会关掉它（结构化缓存
                    在chat_json层做，避免把解析失败的原始输出存进缓存）
+        apis: 端点列表（None=config.LLM_APIS）。核验侧传
+              config.VERIFIER_APIS 走独立厂商端点（K1异构核验）
 
     返回:
         模型的纯文本回答 (str)
@@ -131,9 +138,12 @@ def chat(messages, temperature=0.2, model=None, max_retries=None,
     max_retries = config.LLM_MAX_RETRIES if max_retries is None else max_retries
 
     # ---- 缓存查询（命中则完全跳过API调用）----
+    # 指纹带上端点组标识：同一条消息在"主端点"和"核验端点"是两次
+    # 不同的调用（模型/厂商可能不同），缓存不能互相串
     cache_key = None
     if config.LLM_CACHE_ENABLED and use_cache:
-        cache_key = _fingerprint(model, temperature, messages)
+        cache_key = _fingerprint(
+            model + ("@verifier" if apis else ""), temperature, messages)
         hit = _cache.get_llm(cache_key)
         if hit is not None:
             usage_stats["cache_hits"] += 1
@@ -141,7 +151,7 @@ def chat(messages, temperature=0.2, model=None, max_retries=None,
                   f"已命中{usage_stats['cache_hits']}次)")
             return hit
 
-    endpoints = _available_endpoints()
+    endpoints = _available_endpoints(apis)
     for attempt in range(max_retries):
         ep = endpoints[attempt % len(endpoints)]
         # 全局预算检查: 超预算立即中止（异常在try外抛出，不会被下面的
@@ -258,7 +268,7 @@ def chat_stream(messages, temperature=0.2, model=None, max_retries=2):
 
 
 def chat_json(messages, schema_class, temperature=0.1, model=None,
-              use_cache=True):
+              use_cache=True, apis=None):
     """
     要求模型输出 JSON 并解析为 Pydantic 对象
 
@@ -271,6 +281,9 @@ def chat_json(messages, schema_class, temperature=0.1, model=None,
                    同一条声明第二次审查时直接秒回，不花一分钱。
                    注意缓存键用"修复重试前"的原始消息计算，因此
                    即使上次经历了JSON修复重试，重跑也只需一次查询
+        apis: 端点列表（None=config.LLM_APIS）。核验侧传
+              config.VERIFIER_APIS 走独立厂商端点（K1异构核验），
+              且缓存键带@verifier后缀与主端点的结果互相隔离
 
     返回:
         schema_class 的实例对象
@@ -360,7 +373,8 @@ def chat_json(messages, schema_class, temperature=0.1, model=None,
     cache_key = None
     if config.LLM_CACHE_ENABLED and use_cache:
         cache_key = _fingerprint(
-            model or config.MODEL_NAME, temperature, messages)
+            (model or config.MODEL_NAME) + ("@verifier" if apis else ""),
+            temperature, messages)
         hit = _cache.get_llm(cache_key)
         if hit is not None:
             try:
@@ -388,7 +402,7 @@ def chat_json(messages, schema_class, temperature=0.1, model=None,
         # use_cache=False: 结构化调用的缓存在本函数这一层做，
         # 避免把"解析失败的原始输出"存进chat()层的缓存污染重跑
         raw = chat(messages, temperature=temperature, model=model,
-                   use_cache=False)
+                   use_cache=False, apis=apis)
         try:
             # 剥离可能的 ```json ``` 包裹
             text = raw.strip()

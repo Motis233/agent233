@@ -206,16 +206,83 @@ REVIEWER_SYSTEM_PROMPT = """你是一位极其严格的批判性审查员，负�
 """
 
 
+# ---------------------------------------------------------------
+# K1·B2优化：数值程序化校验（数字/百分比硬事实不经LLM）
+# ---------------------------------------------------------------
+# 原理: "提升12%"被概括成"显著提升"这类模糊化，同源LLM核验时
+# 大概率被放过（自我一致性偏差）。数字/百分比是程序可判定的事实——
+# 声明中的百分比必须在原文摘录中逐字出现，出现不了就是硬伤。
+_PCT_PAT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+
+
+def _numeric_variants(num: str) -> set[str]:
+    """一个数值的等价写法: "12.50"↔"12.5"、"12.0"↔"12"（尾零可省）"""
+    variants = {num}
+    trimmed = num.rstrip("0").rstrip(".") if "." in num else num
+    if trimmed:
+        variants.add(trimmed)
+    return variants
+
+
+def numeric_mismatch(claim: str, evidence: str) -> list[str]:
+    """
+    程序化数值校验（K1，纯函数可离线单测）。
+
+    检查声明中每个百分比 X%（含 X.0% 尾零变体、"X percent"写法、
+    千分位"1,200"归一）是否在证据原文中出现。
+    返回未命中的数值列表（空列表 = 全部命中或声明无百分比）。
+
+    注意: 只拦"声明有、原文没有"这一种硬伤（模糊化/夸大）；
+    "原文有12%，声明写成13%"属于数值篡改，交给LLM语义核验按
+    判定标准处理（方向性错误程序不适合硬判contradicted）。
+    """
+    misses: list[str] = []
+    ev = evidence.replace(",", "")
+    ev_lower = ev.lower()
+    for m in _PCT_PAT.finditer(claim):
+        raw = m.group(1)
+        hits = _numeric_variants(raw)
+        if any(v in ev for v in hits):
+            continue
+        if f"{raw} percent" in ev_lower or (
+                any(f"{v} percent" in ev_lower for v in hits)):
+            continue
+        misses.append(f"{raw}%")
+    return misses
+
+
 def semantic_verify(claim_content: str, evidence_text: str) -> SemanticVerifyResult:
     """
     用LLM核验单条声明（原子事实拆分法）
 
-    流程: LLM拆原子事实并逐条判定 -> 程序按"最坏非暂缓判定"汇总verdict
+    流程: K1数值程序校验（百分比硬事实，不调LLM）-> LLM拆原子事实
+    并逐条判定 -> 程序按"最坏非暂缓判定"汇总verdict
     （verdict由程序强制推导，与原子事实严格一致，防止模型自相矛盾）。
+
+    核验走 config.VERIFIER_APIS 端点（K1异构核验）：未配置
+    VERIFIER_API_KEY 时与主LLM同源（行为不变）；配置后核验与
+    生成使用不同厂商模型，消除自我一致性偏差。
 
     返回:
         SemanticVerifyResult（atomic_facts + verdict/reason/confidence）
     """
+    # ---- 第0级：数值程序校验（零LLM成本，确定性结论）----
+    misses = numeric_mismatch(claim_content, evidence_text)
+    if misses:
+        facts = ", ".join(misses)
+        return SemanticVerifyResult(
+            atomic_facts=[AtomicFactVerdict(
+                fact=f"声明中的数值 {facts} 应能在原文摘录中找到对应出处",
+                verdict="unsupported",
+                reason=f"程序化数值校验: 百分比 {facts} 未在原文摘录中出现，"
+                       f"疑为模糊化/夸大概括（不经LLM，程序直接判定）",
+                confidence=1.0,
+            )],
+            verdict="unsupported",  # 会被_aggregate_verdicts重新推导覆盖
+            reason=f"声明中的数值 {facts} 在原文摘录中未出现（程序校验）",
+            confidence=1.0,
+        )
+
     messages = [
         {"role": "system", "content": REVIEWER_SYSTEM_PROMPT},
         {"role": "user", "content":
@@ -225,6 +292,7 @@ def semantic_verify(claim_content: str, evidence_text: str) -> SemanticVerifyRes
     result = llm_client.chat_json(
         messages, schema_class=SemanticVerifyResult,
         temperature=config.TEMP_REVIEWER,  # 审查要求稳定，最低温度
+        apis=config.VERIFIER_APIS,  # K1: 核验走异构端点（未配置则同源回落）
     )
     # 程序化汇总：以原子事实的最坏非暂缓判定为准，覆盖模型的verdict字段
     result.verdict = _aggregate_verdicts(result.atomic_facts)
@@ -464,7 +532,8 @@ def _macro_f1(gold: list[str], pred: list[str], labels: tuple[str, ...]) -> floa
     return sum(f1s) / len(f1s)
 
 
-def run_d_benchmark(cases: list["BenchmarkCase"]) -> "BenchmarkReport":
+def run_d_benchmark(cases: list["BenchmarkCase"],
+                    ablation: str = "full") -> "BenchmarkReport":
     """运行 D Benchmark（固定测试集上的审查器离线评测）。
 
     Benchmark 样本必须提供人工标签 gold_verdict 与 gold_quote_alignment。
@@ -474,12 +543,25 @@ def run_d_benchmark(cases: list["BenchmarkCase"]) -> "BenchmarkReport":
     失败处理: 单个case的LLM调用失败会计入 errored_cases 并跳过，
     不伪造判定、不污染指标（与正式流水线的llm_error协议一致）。
 
+    消融实验（K2·B3优化）——ablation参数:
+      full          完整两级核验（程序化引用对齐 + LLM语义核验），默认
+      no_semantic   关闭LLM语义核验，判定退化为纯程序规则
+                    （引用对齐成功→supported，失败→unsupported）——
+                    回答"没有LLM语义核验，指标会掉多少"
+                    （需样本提供quote_text+full_text，缺则跳过该样本）
+      no_alignment  关闭程序化引用对齐（引用一律放行），只留LLM语义核验
+                    ——回答"没有逐字对齐兜底，伪造引用漏网多少"
+    三种模式各跑一遍即得消融对比表（benchmark.py ablation 子命令）。
+
     指标: 逐类 P/R/F1 + Macro-F1 + 误放行率
       误放行率 = (gold为坏声明 却被预测为通过) / (gold坏声明总数)
       坏声明 = gold_verdict != supported 或 gold引用伪造
       通过   = predicted_verdict == supported 且 predicted对齐成功
     """
     from models import BenchmarkCase, BenchmarkReport, BenchmarkResult
+
+    if ablation not in ("full", "no_semantic", "no_alignment"):
+        raise ValueError(f"未知消融模式: {ablation}")
 
     if not cases:
         return BenchmarkReport(
@@ -496,7 +578,28 @@ def run_d_benchmark(cases: list["BenchmarkCase"]) -> "BenchmarkReport":
     errored_ids: list[str] = []
     for case in cases:
         try:
-            sv = semantic_verify(case.claim_content, case.evidence_text)
+            if ablation == "no_semantic":
+                # 消融LLM语义核验: 纯程序规则判定（零LLM成本）
+                if case.quote_text is None or case.full_text is None:
+                    print(f"  ⚠ [{case.case_id}] no_semantic消融需要"
+                          f"quote_text+full_text，跳过该样本")
+                    errored_ids.append(case.case_id)
+                    continue
+                predicted_alignment = quote_alignment(
+                    case.quote_text, _normalize(case.full_text))
+                verdict = "supported" if predicted_alignment else "unsupported"
+            else:
+                sv = semantic_verify(case.claim_content, case.evidence_text)
+                verdict = sv.verdict
+                if case.quote_text is not None and case.full_text is not None:
+                    predicted_alignment = quote_alignment(
+                        case.quote_text, _normalize(case.full_text))
+                else:
+                    # D Benchmark 若只评测语义核验，可省略原文全文；此时不伪造对齐结果。
+                    predicted_alignment = case.gold_quote_alignment
+                if ablation == "no_alignment":
+                    # 消融一级核验: 引用对齐一律放行（模拟没有该检查）
+                    predicted_alignment = True
         except budget.BudgetExceededError:
             raise  # 预算耗尽直接中止整个benchmark
         except Exception as e:
@@ -505,23 +608,17 @@ def run_d_benchmark(cases: list["BenchmarkCase"]) -> "BenchmarkReport":
             continue
         kept_cases.append(case)
 
-        if case.quote_text is not None and case.full_text is not None:
-            predicted_alignment = quote_alignment(
-                case.quote_text, _normalize(case.full_text)
-            )
-        else:
-            # D Benchmark 若只评测语义核验，可省略原文全文；此时不伪造对齐结果。
-            predicted_alignment = case.gold_quote_alignment
-
         results.append(BenchmarkResult(
             case_id=case.case_id,
-            predicted_verdict=sv.verdict,
+            predicted_verdict=verdict,
             predicted_quote_alignment=predicted_alignment,
-            verdict_correct=sv.verdict == case.gold_verdict,
+            verdict_correct=verdict == case.gold_verdict,
             alignment_correct=predicted_alignment == case.gold_quote_alignment,
+            gold_verdict=case.gold_verdict,
+            gold_quote_alignment=case.gold_quote_alignment,
         ))
         gold_verdicts.append(case.gold_verdict)
-        pred_verdicts.append(sv.verdict)
+        pred_verdicts.append(verdict)
 
     n = len(results)
     verdict_correct = sum(r.verdict_correct for r in results)
@@ -562,7 +659,7 @@ def run_d_benchmark(cases: list["BenchmarkCase"]) -> "BenchmarkReport":
         false_pass_rate=false_pass_rate,
         errored_cases=len(errored_ids),
     )
-    print("\n[D Benchmark]")
+    print("\n[D Benchmark]" + (f" (消融模式: {ablation})" if ablation != "full" else ""))
     print(f"  有效样本: {n} (跳过{len(errored_ids)}个LLM失败样本)")
     print(f"  Verdict Accuracy: {report.verdict_accuracy:.1%}")
     print(f"  Alignment Accuracy: {report.alignment_accuracy:.1%}")
