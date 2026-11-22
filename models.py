@@ -286,6 +286,13 @@ class BenchmarkResult(BaseModel):
     predicted_quote_alignment: bool
     verdict_correct: bool
     alignment_correct: bool
+    # K2·B3优化: 保留人工标注真值——bootstrap置信区间重采样时
+    # 需要从逐条结果还原逐类P/R/F1与误放行率，没有gold算不了
+    gold_verdict: str | None = Field(
+        default=None, description="人工标注真值(与BenchmarkCase.gold_verdict一致)")
+    gold_quote_alignment: bool | None = Field(
+        default=None, description="人工标注引用对齐真值——bootstrap重采样"
+        "还原误放行率时需要（坏声明=gold非supported或gold引用伪造）")
 
 
 class BenchmarkReport(BaseModel):

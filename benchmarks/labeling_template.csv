@@ -1,0 +1,6 @@
+case_id,doc_key,claim_content,evidence_text,quote_text,gold_verdict,gold_quote_alignment,annotator,notes
+c001,demo_paper01,"方法X在ImageNet上达到95.2%的top-1准确率","...our method achieves 95.2% top-1 accuracy on ImageNet...","our method achieves 95.2% top-1 accuracy on ImageNet",supported,true,示例,"数字+出处齐全→supported"
+c002,demo_paper01,"方法X在多个数据集上均达到95.2%准确率","...our method achieves 95.2% top-1 accuracy on ImageNet...","our method achieves 95.2% top-1 accuracy on ImageNet",unsupported,true,示例,"单数据集被扩大为多个→unsupported"
+c003,demo_paper01,"方法X在ImageNet上达到98.0%准确率","...our method achieves 95.2% top-1 accuracy on ImageNet...","our method achieves 95.2% top-1 accuracy on ImageNet",contradicted,true,示例,"数字篡改95.2→98.0→contradicted"
+c004,demo_paper01,"方法X性能优于所有基线","...our method achieves 95.2% top-1 accuracy on ImageNet...","our method achives 95.2% top-1 acuracy on ImageNet",contradicted,false,示例,"quote拼写改写→对齐false（程序可检）"
+c005,demo_paper02,"作者将训练时长缩短为原来的一半","...training takes 48 hours on 8 GPUs...","training takes 48 hours on 8 GPUs",unsupported,true,示例,"原文无缩短一半的表述→unsupported"

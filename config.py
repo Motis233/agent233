@@ -42,6 +42,15 @@ API_KEY_2 = _clean(os.environ.get("LLM_API_KEY_2", ""))
 BASE_URL_2 = _clean(os.environ.get("LLM_BASE_URL_2", ""))
 MODEL_NAME_2 = _clean(os.environ.get("LLM_MODEL_2", ""))
 
+# 异构核验端点（可选，K1·B2优化：核验与生成不同源）：
+# 声明核验(reviewer.semantic_verify)如果也用生成侧的同一个模型，
+# 存在自我一致性偏差——模型看自己风格的话更容易放行。
+# 配置 VERIFIER_API_KEY 后核验走独立厂商（不同预训练语料→错误不相关）。
+# 留空 = 核验回落主LLM端点，行为与原来完全一致。
+VERIFIER_API_KEY = _clean(os.environ.get("VERIFIER_API_KEY", ""))
+VERIFIER_BASE_URL = _clean(os.environ.get("VERIFIER_BASE_URL", ""))
+VERIFIER_MODEL = _clean(os.environ.get("VERIFIER_MODEL", ""))
+
 # 各服务商的默认参数（自动识别时使用）
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
@@ -77,6 +86,12 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 # 同样的输入30天内直接复用本地结果——重复主题的重跑从分钟级降到秒级。
 # 置0关闭（会彻底重新调用LLM，用于想要全新输出的场景）
 LLM_CACHE_ENABLED = os.environ.get("LLM_CACHE", "1") == "1"
+
+# 版面感知PDF解析（K3·A3优化，2026-11新增）：
+# 1 = 按文本块坐标识别双栏并按阅读顺序重组（默认开，根治双栏论文
+#     左右栏交错导致的"声明与原文对不上→误判幻觉"）；
+# 0 = 回退旧的纯文本流抽取（灰度开关，解析结果异常时可快速回退）
+LAYOUT_AWARE_PDF = os.environ.get("LAYOUT_AWARE_PDF", "1") == "1"
 
 # ---------------------------------------------------------------
 # 二、各Agent的温度参数（temperature）
@@ -207,4 +222,15 @@ if API_KEY_2:
         "base_url": BASE_URL_2,
         "model": MODEL_NAME_2,
     })
+
+# 核验端点列表（与LLM_APIS同构）：未配置VERIFIER_API_KEY时直接复用
+# 主端点列表（同源回落，行为不变）；配置后核验与生成彻底异构
+VERIFIER_APIS = LLM_APIS
+if VERIFIER_API_KEY:
+    VERIFIER_APIS = [{
+        "name": "核验",
+        "api_key": VERIFIER_API_KEY,
+        "base_url": VERIFIER_BASE_URL,
+        "model": VERIFIER_MODEL,
+    }]
 

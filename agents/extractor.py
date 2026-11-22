@@ -34,12 +34,86 @@ def _clean_page_text(text: str) -> str:
     return text
 
 
+# ---------------------------------------------------------------
+# K3·A3优化：版面感知解析（2026-11新增）
+# ---------------------------------------------------------------
+# 问题: PDF是"排版指令的集合"而非文本流。page.get_text("text")按
+# 内部对象顺序吐字，双栏论文的左右栏会交错拼接（读左栏第1行后直接
+# 跳到右栏第1行），提取Agent拿到"错序+残缺"的上下文，写出的声明
+# 与原文对不上→下游引用对齐大面积失败→被误判成幻觉。
+#       这是"解析问题伪装成幻觉问题"的典型。
+# 方案: 用page.get_text("blocks")拿带坐标的文本块，识别左右双栏，
+# 按人类阅读顺序（左栏自上而下→右栏自上而下，通栏标题/摘要作横向
+# 分隔带）重组。识别不了单栏/异常时回退纯文本流（宁可退回旧行为，
+# 不能比旧的更差）。
+def _page_text_layout(page) -> str:
+    """版面感知的单页文本重组（K3）。返回该页按阅读顺序拼接的文本。"""
+    blocks = page.get_text("blocks")  # [x0, y0, x1, y1, text, block_no, type]
+    text_blocks = [b for b in blocks if b[6] == 0 and (b[4] or "").strip()]
+    # 块太少谈不上分栏（封面/纯图页），退回默认文本流
+    if len(text_blocks) < 3:
+        return page.get_text("text")
+
+    pw = float(page.rect.width)
+    left: list = []    # 完全落在左半栏的块
+    right: list = []   # 完全落在右半栏的块
+    full: list = []    # 横跨整页宽度的通栏块（标题/摘要/图注）
+    for b in text_blocks:
+        x0, _, x1, _ = b[0], b[1], b[2], b[3]
+        w = x1 - x0
+        if w > 0.75 * pw:
+            full.append(b)
+        elif x1 <= 0.58 * pw:
+            left.append(b)
+        elif x0 >= 0.42 * pw:
+            right.append(b)
+        else:
+            full.append(b)  # 骑跨中线的块按通栏处理
+
+    def _col(col, y_top, y_bot):
+        """取一列中位于竖直区间(y_top, y_bot)内的块，按阅读顺序排好"""
+        picked = [b for b in col if b[3] > y_top and b[1] < y_bot]
+        return sorted(picked, key=lambda b: (round(b[1], 1), b[0]))
+
+    # 双栏成立条件: 左右两栏都有足够块，且通栏块不占绝对多数
+    # （学术论文正文页左右栏块各≥2很稳定；若不满足说明是单栏版式）
+    if len(left) >= 2 and len(right) >= 2 and len(full) <= len(left) + len(right):
+        ordered: list = []
+        prev_y = -1e9
+        # 通栏块（标题/摘要/跨栏图注）把页面切成若干横向条带，
+        # 条带内先左栏后右栏——双栏论文的标准阅读顺序
+        for fb in sorted(full, key=lambda b: b[1]):
+            ordered.extend(_col(left, prev_y, fb[1]))
+            ordered.extend(_col(right, prev_y, fb[1]))
+            ordered.append(fb)
+            prev_y = fb[3]
+        ordered.extend(_col(left, prev_y, 1e18))
+        ordered.extend(_col(right, prev_y, 1e18))
+        return "\n".join(b[4].strip() for b in ordered)
+    # 单栏: 简单按(纵坐标,横坐标)排序即可修正轻微乱序
+    ordered = sorted(text_blocks, key=lambda b: (round(b[1], 1), b[0]))
+    return "\n".join(b[4].strip() for b in ordered)
+
+
+def _extract_page_text(page) -> str:
+    """单页文本入口: 按config.LAYOUT_AWARE_PDF灰度开关选解析路径，
+    版面感知路径出错时回退纯文本流（绝不因解析升级让流水线崩溃）"""
+    if config.LAYOUT_AWARE_PDF:
+        try:
+            return _page_text_layout(page)
+        except Exception as e:
+            print(f"[提取Agent] 版面感知解析异常, 回退纯文本流: {e}")
+    return page.get_text("text")
+
+
 def pdf_to_pages(pdf_path: str, max_chars: int = 100_000) -> list[str]:
     """
     解析PDF为逐页文本列表（供引用定位按页归属使用）
 
     每页做与 pdf_to_text 相同的清洗（含页码噪声行去除），
     总量超过 max_chars 时停止追加（与 pdf_to_text 截断口径一致）。
+    K3起默认走版面感知路径（双栏按阅读顺序重组），
+    LAYOUT_AWARE_PDF=0 可回退纯文本流。
 
     返回:
         list[str]，第i个元素为第i页(0-based)的清洗后文本
@@ -48,7 +122,7 @@ def pdf_to_pages(pdf_path: str, max_chars: int = 100_000) -> list[str]:
     pages: list[str] = []
     total = 0
     for page in doc:
-        text = _clean_page_text(page.get_text("text"))
+        text = _clean_page_text(_extract_page_text(page))
         # 页码噪声处理：把单独成行的数字（页码）去掉
         lines = [ln for ln in text.split("\n")
                  if not (ln.strip().isdigit() and len(ln.strip()) <= 4)]
