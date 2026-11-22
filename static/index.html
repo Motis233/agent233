@@ -402,6 +402,54 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
   padding: 2px 10px; font-size: 11.5px; }
 .ob-preview { background: var(--bg); border-radius: 8px; padding: 10px 12px; font-size: 12.5px;
   color: var(--slate); margin-bottom: 12px; line-height: 1.6; }
+
+/* ---- 结果中转页（引导关键词 ↔ 论文关联 + 分流） ---- */
+.br-kwrow { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.br-kwchip { position: relative; display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12.5px; padding: 6px 12px 8px; border-radius: 10px; overflow: hidden;
+  background: var(--brand-lt); border: 1px solid var(--border); color: var(--ink); font-weight: 600; }
+.br-kwchip i { font-style: normal; color: var(--slate); font-size: 11.5px; font-weight: 400; }
+.br-kwchip u { position: absolute; left: 0; bottom: 0; height: 3px;
+  background: var(--brand-grad); text-decoration: none; }
+.br-summary { margin: 6px 0 2px; }
+.br-row { display: flex; align-items: center; gap: 10px; padding: 9px 6px;
+  border-bottom: 1px dashed var(--border); }
+.br-no { width: 22px; height: 22px; flex: 0 0 22px; border-radius: 7px;
+  background: var(--brand-lt); color: var(--brand); font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; }
+.br-main { flex: 1; min-width: 0; }
+.br-title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+.br-meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.br-hits { display: flex; flex-wrap: wrap; gap: 5px; max-width: 46%; justify-content: flex-end; }
+.br-hit { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+  background: var(--bg); border: 1px solid var(--border); color: var(--slate); }
+.br-hit.strong { background: var(--brand-lt); border-color: var(--brand);
+  color: var(--brand); font-weight: 600; }
+.br-hit.claim { background: #ecfdf5; border-color: #a7f3d0; color: #059669; }
+.br-note { flex-basis: 100%; font-size: 12px; color: var(--slate); background: var(--bg);
+  border: 1px dashed var(--border); border-radius: 8px; padding: 8px 12px; line-height: 1.6; }
+.br-hit.none { border-style: dashed; }
+.br-actions { display: flex; gap: 10px; margin: 14px 0 4px; flex-wrap: wrap; }
+.br-btn { flex: 1; min-width: 200px; padding: 11px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: #fff; color: var(--ink);
+  font: inherit; font-weight: 600; cursor: pointer; }
+.br-btn:hover { border-color: var(--brand); color: var(--brand); }
+.br-btn.primary { background: var(--brand-grad); border: none; color: #fff; }
+.br-btn.primary:hover { opacity: .92; color: #fff; }
+#br-papers { margin-top: 8px; }
+.br-paper { border: 1px solid var(--border); border-radius: 12px; padding: 12px;
+  margin: 10px 0; background: #fff; }
+.br-paper:hover { border-color: var(--brand); box-shadow: var(--shadow-lg); }
+.br-paper-h { display: flex; align-items: flex-start; gap: 10px; }
+.br-paper-h > div { flex: 1; min-width: 0; }
+.br-score { flex: 0 0 auto; font-size: 11.5px; color: var(--brand);
+  background: var(--brand-lt); border-radius: 999px; padding: 3px 10px; }
+.br-abs { font-size: 12.5px; color: var(--slate); margin-top: 6px; line-height: 1.6; }
+.br-abs summary { cursor: pointer; color: var(--brand); font-size: 12px; }
+.br-back { font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: #fff; color: var(--slate);
+  cursor: pointer; font: inherit; }
+.br-back:hover { color: var(--brand); border-color: var(--brand); }
 </style>
 </head>
 <body>
@@ -470,12 +518,29 @@ iframe { width: 100%; height: 540px; border: 1px solid var(--border); border-rad
         <div id="logs"></div>
       </div>
 
+      <!-- 结果中转页：引导关键词 ↔ 论文 关联 + 分流选择 -->
+      <div id="bridge-panel" class="hidden">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <b id="br-topic"></b>
+          <span class="badge done">已完成</span>
+        </div>
+        <div id="br-sub" style="font-size:12.5px;color:var(--slate);margin-top:5px;line-height:1.7"></div>
+        <div id="br-kw" class="br-kwrow"></div>
+        <div id="br-summary" class="br-summary"></div>
+        <div class="br-actions">
+          <button class="br-btn primary" onclick="brShowPapers()">📄 直接看筛选出的论文</button>
+          <button class="br-btn" onclick="brEnterFull()">🔍 查看更多信息 · 进入完整结果</button>
+        </div>
+        <div id="br-papers" class="hidden"></div>
+      </div>
+
       <!-- 结果面板 -->
       <div id="result-panel" class="hidden">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <b id="res-topic"></b>
           <span id="res-badge" class="badge"></span>
           <span id="res-hallu" class="badge hidden"></span>
+          <button id="btn-back-bridge" class="br-back hidden" onclick="brBack()">← 返回中转页</button>
         </div>
         <div id="stat-row" class="hidden"></div>
         <div id="res-err" class="hidden">
@@ -535,7 +600,25 @@ function toast(msg) {
 async function api(path, opts = {}) {
   const o = Object.assign({}, opts);
   o.headers = Object.assign({}, o.headers || {}, {"X-App-Password": pw});
-  const r = await fetch(path, o);
+  // 超时/取消支持（2026-11-22 词云卡死修复）:
+  //  - opts.timeoutMs: 到时自动 abort，避免 fetch 无限挂起（后端最坏
+  //    重试几分钟时前端永远"生成中…"，体感即页面卡死）
+  //  - opts.signal: 调用方可传入自己的 AbortController 实现"取消"
+  const to = o.timeoutMs; delete o.timeoutMs;
+  const ctl = new AbortController();
+  if (o.signal) {
+    if (o.signal.aborted) ctl.abort(o.signal.reason);
+    else o.signal.addEventListener("abort", () => ctl.abort(o.signal.reason));
+  }
+  let timedOut = false;
+  if (to) setTimeout(() => { timedOut = true; ctl.abort(); }, to);
+  o.signal = ctl.signal;
+  let r;
+  try { r = await fetch(path, o); }
+  catch (e) {
+    if (timedOut) throw new Error("请求超时，请检查网络/服务是否在线后重试");
+    throw e;   // 用户主动取消(AbortError)原样上抛，由调用方区分
+  }
   if (r.status === 401) {
     const v = prompt("请输入访问密码");
     if (v !== null) { pw = v; localStorage.setItem("pw", v); delete o.headers; return api(path, o); }
@@ -599,7 +682,9 @@ $("#btn-run").onclick = async () => {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         topic, mode: $("#mode").value, fast: $("#fast").checked,
-        years: +$("#years").value, top_k: +$("#top_k").value
+        years: +$("#years").value, top_k: +$("#top_k").value,
+        // 智能引导选中的术语（中英对照）；主题不含"重点关注"说明是手动输入，不带
+        focus_keywords: (topic.includes("重点关注：") && OB.focusTerms) ? OB.focusTerms : []
       })
     });
     seenLogs = 0;
@@ -612,7 +697,7 @@ $("#btn-run").onclick = async () => {
 /* ---------------- 检索前引导（词云向导） ---------------- */
 const OB = { step: 1, topic: "", identity: "硕士生", stage: "入门了解", focus: "",
              glossary: null, sel: new Set(), openTerm: -1, loading: false,
-             final: null };
+             final: null, focusTerms: null };
 const OB_STAGES = ["入门了解", "开题调研", "正式综述", "追前沿", "交叉探索"];
 const OB_PRESET = {
   "入门了解": { mode: "mode1", fast: true,  top_k: 5,  years: 2 },
@@ -692,8 +777,11 @@ function obSphereInit() {
 }
 
 function openObWizard() {
-  OB.step = 1; OB.topic = $("#topic").value.trim(); OB.glossary = null;
-  OB.sel = new Set(); OB.openTerm = -1; OB.loading = false; OB.final = null;
+  // 剥离历史「重点关注」段：避免上次拼接结果被带回向导、反复堆叠主题
+  OB.step = 1; OB.topic = $("#topic").value.trim()
+    .replace(/[（(]重点关注[:：].*?[）)]/g, "").trim();
+  OB.glossary = null;
+  OB.sel = new Set(); OB.openTerm = -1; OB.loading = false; OB.final = null; OB.focusTerms = null;
   $("#modal-box").innerHTML = '<div id="ob-body"></div>';
   $("#modal").classList.remove("hidden");
   obRender();
@@ -723,7 +811,8 @@ function obRender() {
                oninput="OB.focus=this.value"></div>
       <div class="ob-actions">
         <button class="ob-btn" id="ob-gen" onclick="obGenerate()"
-                ${OB.loading ? "disabled" : ""}>${OB.loading ? "🪄 生成中…（约15秒）" : "🪄 生成引导词云"}</button>
+                ${OB.loading ? "disabled" : ""}>${OB.loading ? "🪄 生成中…" : "🪄 生成引导词云"}</button>
+        ${OB.loading ? `<button class="ob-btn ghost" onclick="obCancelGen()">✖ 取消</button>` : ""}
         <button class="ob-btn ghost" onclick="closeModal()">跳过引导</button></div>
       ${OB.error ? `<div class="ob-preview">⚠️ ${esc(OB.error)}——可直接跳过引导，用左侧表单检索</div>` : ""}`;
     if (!OB.loading) $("#ob-topic").value = OB.topic;
@@ -731,9 +820,13 @@ function obRender() {
   }
   if (OB.step === 2) {
     const terms = OB.glossary.terms;
+    // 防御兜底: LLM/历史缓存可能给出预置四类之外的category或异常weight，
+    // 直接取下标会抛TypeError导致obRender中断、弹窗永远停在"生成中…"
+    const catOf = t => OB_CAT[t.category] || OB_CAT.core;
+    const wOf = t => Math.max(1, Math.min(10, Number(t.weight) || 5));
     const cloud = terms.map((t, i) =>
       `<span class="ob-word ${OB.sel.has(i) ? "picked" : ""} ${OB.openTerm === i ? "focus" : ""}"
-        data-i="${i}" style="color:${OB_CAT[t.category].color};font-size:${Math.round(12 + t.weight)}px"
+        data-i="${i}" style="color:${catOf(t).color};font-size:${Math.round(12 + wOf(t))}px"
         title="${esc(t.term_en)} · 相关度${t.weight}">${esc(t.term_zh)}</span>`).join("");
     const groups = Object.keys(OB_CAT).map(c => {
       const list = terms.map((t, i) => ({ t, i })).filter(x => x.t.category === c)
@@ -748,7 +841,7 @@ function obRender() {
     const t = OB.openTerm >= 0 ? terms[OB.openTerm] : null;
     const card = t ? `<div class="ob-termcard">
         <b>${esc(t.term_zh)} · ${esc(t.term_en)}</b>
-        <span style="color:${OB_CAT[t.category].color}">［${OB_CAT[t.category].label.split(" · ")[0]} · 相关度 ${t.weight}/10］</span><br>
+        <span style="color:${catOf(t).color}">［${(catOf(t).label || "术语").split(" · ")[0]} · 相关度 ${t.weight}/10］</span><br>
         ${esc(t.explanation)}<br>
         <button class="ob-btn" style="padding:5px 12px;font-size:12px;margin-top:6px"
           onclick="OB.sel.has(${OB.openTerm})?OB.sel.delete(${OB.openTerm}):OB.sel.add(${OB.openTerm});obRender()">
@@ -792,20 +885,37 @@ function obEnterConfirm() {
   obRender();
 }
 async function obGenerate() {
-  OB.topic = $("#ob-topic").value.trim();
+  OB.topic = $("#ob-topic").value.trim()
+    .replace(/[（(]重点关注[:：].*?[）)]/g, "").trim();
   if (!OB.topic) { OB.error = "请先输入研究主题"; obRender(); return; }
-  OB.loading = true; OB.error = ""; obRender();
+  OB.loading = true; OB.error = ""; OB.t0 = Date.now();
+  OB.ctl = new AbortController();
+  // 计时器：让用户看到"真的在动"，不再像卡死（2026-11-22修复）
+  OB.tick = setInterval(() => {
+    const b = $("#ob-gen");
+    if (b && OB.loading)
+      b.textContent = `🪄 生成中… ${Math.round((Date.now() - OB.t0) / 1000)} 秒`;
+  }, 1000);
+  obRender();
   try {
     OB.glossary = await api("/api/glossary", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic: OB.topic, identity: OB.identity, stage: OB.stage })
+      body: JSON.stringify({ topic: OB.topic, identity: OB.identity, stage: OB.stage }),
+      timeoutMs: 90000, signal: OB.ctl.signal
     });
     OB.step = 2; OB.openTerm = -1;
-  } catch (e) { OB.error = e.message || "词云生成失败"; }
-  OB.loading = false; obRender();
+  } catch (e) {
+    OB.error = e.name === "AbortError" ? "已取消生成"
+             : (e.message || "词云生成失败");
+  }
+  clearInterval(OB.tick); OB.loading = false; obRender();
 }
+function obCancelGen() { if (OB.ctl) OB.ctl.abort(); }
 function obStartRun() {
   const names = [...OB.sel].map(i => OB.glossary.terms[i].term_zh);
+  // 保存中英对照术语（中转页据此做论文关键词命中分析）
+  OB.focusTerms = [...OB.sel].map(i =>
+    ({zh: OB.glossary.terms[i].term_zh, en: OB.glossary.terms[i].term_en}));
   $("#topic").value = OB.topic + (names.length ? `（重点关注：${names.join("；")}）` : "");
   $("#mode").value = $("#ob-fmode").value;
   $("#top_k").value = $("#ob-fk").value;
@@ -823,14 +933,105 @@ function selectTask(id) {
   stopLive();
   api("/api/tasks/" + id).then(t => {
     if (t.state === "running") startLive(id, t);
-    else showResult(id, t);
+    else tryBridge(id, t);
     refreshTasks(id);
   }).catch(e => toast(e.message));
+}
+
+/* ---------------- 结果中转页（引导关键词 ↔ 论文关联 + 分流） ---------------- */
+let BRIDGE = null;   // {tid, t, b} 当前中转页上下文
+async function tryBridge(id, t) {
+  BRIDGE = null;
+  // 只有成功任务且主题带「重点关注：…」引导关键词才进中转页，否则走完整结果
+  if (t.state === "done") {
+    try {
+      const b = await api(`/api/tasks/${id}/bridge`);
+      if (b && b.focus_keywords && b.focus_keywords.length && b.papers.length) {
+        BRIDGE = {tid: id, t, b};
+        showBridge();
+        return;
+      }
+    } catch (e) { /* 无引导关键词或产物缺失 → 直接进完整结果 */ }
+  }
+  showResult(id, t);
+}
+function showBridge() {
+  const b = BRIDGE.b, n = b.papers.length;
+  $("#placeholder").classList.add("hidden");
+  $("#progress-panel").classList.add("hidden");
+  $("#result-panel").classList.add("hidden");
+  $("#bridge-panel").classList.remove("hidden");
+  $("#br-papers").classList.add("hidden");   // 每次进入重置分流
+  $("#br-topic").textContent = b.base_topic || b.topic;
+  $("#br-sub").innerHTML =
+    `🧭 本次检索由智能引导词云驱动：你在引导中选中的关键词已注入检索主题与检索计划。` +
+    `系统筛选出 <b>${n}</b> 篇论文，下面是每篇论文与你所选关键词的命中关系。` +
+    (b.queries.length ? `<br>🔎 检索计划基于 ${b.queries.length} 组检索词：` +
+      b.queries.map(q => `<code>${esc(q)}</code>`).join("、") : "");
+  // 关键词覆盖度（覆盖条 = 命中该词的论文占比）
+  $("#br-kw").innerHTML = b.coverage.map(c => {
+    const pct = c.total ? Math.round(c.n / c.total * 100) : 0;
+    return `<span class="br-kwchip" title="有 ${c.n} 篇论文命中该关键词${c.en ? "（" + esc(c.en) + "）" : ""}">🗝 ${esc(c.kw)}
+      <i>${c.n}/${c.total} 篇 · ${pct}%</i><u style="width:${pct}%"></u></span>`;
+  }).join("") +
+    (b.coverage.length && b.coverage.every(c => !c.en && c.n === 0)
+      ? `<div class="br-note">ⓘ 该任务创建于「中英对照关键词」功能上线之前，只能按中文关键词匹配英文论文原文，命中率受限。重新用 🧭 智能引导创建一次任务，即可看到完整的关键词命中分析。</div>`
+      : "");
+  // 论文 ↔ 关键词 一览（标题命中=实心高亮，摘要命中=浅色）
+  $("#br-summary").innerHTML = b.papers.map((p, i) => {
+    const hits = p.matches.length
+      ? p.matches.map(h => {
+          const where = h.in_title ? "标题" : (h.in_abstract ? "摘要" : "声明");
+          const cls = h.in_title ? "strong" : (h.in_abstract ? "" : "claim");
+          const tip = esc(h.en || h.kw) + " · " +
+            [h.in_title && "标题", h.in_abstract && "摘要", h.in_claims && "声明"]
+              .filter(Boolean).join("+");
+          return `<span class="br-hit ${cls}" title="${tip}">${esc(h.kw)}（${where}）</span>`;
+        }).join("")
+      : `<span class="br-hit none" title="未直接命中关键词，按主题相关度收录">按主题相关度收录</span>`;
+    return `<div class="br-row">
+      <span class="br-no">${i + 1}</span>
+      <div class="br-main"><div class="br-title">${esc(p.title)}</div>
+        <div class="br-meta">${p.year || "?"} 年 · 被引 ${p.cited_by || 0}${p.category ? " · " + esc(p.category) : ""}</div></div>
+      <div class="br-hits">${hits}</div></div>`;
+  }).join("");
+}
+function brShowPapers() {
+  const el = $("#br-papers");
+  if (!el.classList.contains("hidden")) { el.classList.add("hidden"); return; }
+  el.innerHTML = BRIDGE.b.papers.map((p, i) => {
+    const hits = p.matches.map(h => {
+      const where = h.in_title ? "标题" : (h.in_abstract ? "摘要" : "声明");
+      const cls = h.in_title ? "strong" : (h.in_abstract ? "" : "claim");
+      return `<span class="br-hit ${cls}" title="${esc(h.en || h.kw)}">${esc(h.kw)} · ${where}</span>`;
+    }).join("");
+    return `<div class="br-paper">
+      <div class="br-paper-h"><span class="paper-num">${i + 1}</span>
+        <div><div class="br-title">${esc(p.title)}</div>
+        <div class="br-meta">${esc((p.authors || []).join(", "))}${p.authors && p.authors.length ? " · " : ""}${p.year || "?"} 年 · 被引 ${p.cited_by || 0}
+          ${p.category ? `· <span class="badge">${esc(p.category)}</span>` : ""}
+          ${p.claims_n ? `· 已提取 ${p.claims_n} 条声明` : ""}</div></div>
+        ${p.score ? `<span class="br-score" title="关键词命中得分：标题 3 分/个，摘要 1 分/个">命中 ${p.score} 分</span>` : ""}</div>
+      ${hits ? `<div class="br-hits" style="max-width:100%;justify-content:flex-start;margin:7px 0 0">${hits}</div>` : ""}
+      ${p.abstract ? `<details class="br-abs"><summary>▸ 摘要（前 180 字）</summary>${esc(p.abstract)}…</details>` : ""}
+    </div>`;
+  }).join("");
+  el.classList.remove("hidden");
+  el.scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+function brEnterFull() {
+  $("#bridge-panel").classList.add("hidden");
+  showResult(BRIDGE.tid, BRIDGE.t);
+}
+function brBack() {
+  $("#result-panel").classList.add("hidden");
+  showBridge();
 }
 
 function stopLive() {
   $("#progress-panel").classList.add("hidden");
   $("#result-panel").classList.add("hidden");
+  $("#bridge-panel").classList.add("hidden");
   $("#btn-cancel-wrap").classList.add("hidden");
   $("#logs").innerHTML = "";
   $("#stage-bar").innerHTML = "";
@@ -917,8 +1118,10 @@ function downloadText(name, text) {
 async function showResult(id, t) {
   $("#placeholder").classList.add("hidden");
   $("#progress-panel").classList.add("hidden");
+  $("#bridge-panel").classList.add("hidden");
   const p = $("#result-panel");
   p.classList.remove("hidden");
+  $("#btn-back-bridge").classList.toggle("hidden", !BRIDGE);
   $("#res-topic").textContent = t.topic;
   $("#res-badge").className = "badge " + t.state;
   $("#res-badge").textContent = stateText(t.state);

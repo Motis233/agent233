@@ -258,7 +258,7 @@ def chat_stream(messages, temperature=0.2, model=None, max_retries=2):
 
 
 def chat_json(messages, schema_class, temperature=0.1, model=None,
-              use_cache=True):
+              use_cache=True, max_retries=None, parse_rounds=3):
     """
     要求模型输出 JSON 并解析为 Pydantic 对象
 
@@ -271,6 +271,13 @@ def chat_json(messages, schema_class, temperature=0.1, model=None,
                    同一条声明第二次审查时直接秒回，不花一分钱。
                    注意缓存键用"修复重试前"的原始消息计算，因此
                    即使上次经历了JSON修复重试，重跑也只需一次查询
+        max_retries: 透传给 chat() 的网络重试上限。None=用全局默认
+                     (config.LLM_MAX_RETRIES)。交互式端点(如词云)应传
+                     更小值——默认配置下最坏耗时 =
+                     parse_rounds × max_retries × LLM_TIMEOUT(120s) +
+                     指数退避，全默认约19分钟，交互场景必须收紧
+        parse_rounds: JSON解析失败后的"喂回错误让模型自修"轮数上限。
+                      默认3；交互式端点建议2
 
     返回:
         schema_class 的实例对象
@@ -383,12 +390,12 @@ def chat_json(messages, schema_class, temperature=0.1, model=None,
                 except Exception:
                     pass
 
-    # 最多尝试3次解析（第一次解析失败就把错误信息喂回去让模型自己修复）
-    for attempt in range(3):
+    # 最多尝试parse_rounds次解析（第一次解析失败就把错误信息喂回去让模型自己修复）
+    for attempt in range(parse_rounds):
         # use_cache=False: 结构化调用的缓存在本函数这一层做，
         # 避免把"解析失败的原始输出"存进chat()层的缓存污染重跑
         raw = chat(messages, temperature=temperature, model=model,
-                   use_cache=False)
+                   max_retries=max_retries, use_cache=False)
         try:
             # 剥离可能的 ```json ``` 包裹
             text = raw.strip()
