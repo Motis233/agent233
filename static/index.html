@@ -776,7 +776,11 @@ $("#btn-run").onclick = async () => {
 /* ---------------- 检索前引导（词云向导） ---------------- */
 const OB = { step: 1, topic: "", identity: "硕士生", stage: "入门了解", focus: "",
              glossary: null, sel: new Set(), openTerm: -1, loading: false,
-             final: null, focusTerms: null, lastStep: 0 };
+             final: null, focusTerms: null, lastStep: 0,
+             /* 词云预热（方案1）：主题/画像变动即后台静默生成，点"生成"时大概率秒开 */
+             pfTimer: 0, pfDoneKey: "", pfCache: {}, pfState: {},
+             /* 解释懒加载（方案2）：点击术语时按需生成，explBusy=进行中 explFail=失败待重试 */
+             explBusy: {}, explFail: {} };
 const OB_STAGES = ["入门了解", "开题调研", "正式综述", "追前沿", "交叉探索"];
 const OB_PRESET = {
   "入门了解": { mode: "mode1", fast: true,  top_k: 5,  years: 2 },
@@ -807,6 +811,33 @@ function obEstimate() {
   const f = OB.final;
   const min = f.fast ? 3 : (f.top_k <= 6 ? 8 : f.top_k <= 10 ? 15 : 25);
   return `⏱ 预计耗时约 ${min} 分钟${f.fast ? "（快速模式）" : ""} · 期间页面可关闭，任务在后台继续`;
+}
+
+/* ---- 词云预热（方案1）：输入主题/切换画像即后台静默生成，点"生成"时大概率秒开 ---- */
+function obPfKey() { return OB.topic.trim() + "|" + OB.identity + "|" + OB.stage; }
+function obSchedulePrefetch(delay) {
+  clearTimeout(OB.pfTimer);
+  OB.pfTimer = setTimeout(obMaybePrefetch, delay || 1200);
+}
+function obMaybePrefetch() {
+  if (OB.loading) return;
+  const key = obPfKey();
+  if (key === OB.pfDoneKey) return;              // 同一组合已预热过
+  if (!OB.topic || OB.topic.trim().length < 3) return;
+  OB.pfDoneKey = key;
+  OB.pfState[key] = "pending";
+  OB.pfCache[key] = api("/api/glossary", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topic: OB.topic.trim(), identity: OB.identity, stage: OB.stage }),
+    timeoutMs: 90000
+  }).then(g => {
+    OB.pfState[key] = "ready";
+    return g;
+  }).catch(e => {
+    delete OB.pfCache[key];                      // 失败不缓存，点"生成"时会重试
+    OB.pfState[key] = "failed";
+    return null;                                 // 不 re-throw：预热失败静默，生成时由 obGenerate 重试
+  });
 }
 
 /* ---- 3D 词云球：斐波那契球面分布 + 深度投影 + 拖拽/悬停交互 ---- */
@@ -910,9 +941,11 @@ function obRender() {
   const anim = OB.lastStep !== OB.step ? `<div class="ob-anim">` : `<div>`;
   OB.lastStep = OB.step;
   if (OB.step === 1) {
+    const pfReady = OB.pfState[obPfKey()] === "ready";
     el.innerHTML = `${obBar()}${anim}
       <div class="ob-field"><label>研究主题</label>
-        <textarea id="ob-topic" placeholder="例如：脉冲神经网络的高效训练方法">${esc(OB.topic)}</textarea></div>
+        <textarea id="ob-topic" placeholder="例如：脉冲神经网络的高效训练方法"
+          oninput="OB.topic=this.value;obSchedulePrefetch()">${esc(OB.topic)}</textarea></div>
       <div class="ob-field"><label>你的身份（影响术语解释的讲法）</label>
         ${obPillGroup(["本科生", "硕士生", "博士生", "研究者", "工程师"], OB.identity, "OB.identity")}</div>
       <div class="ob-field"><label>当前阶段（决定检索预设）</label>
@@ -923,11 +956,13 @@ function obRender() {
                oninput="OB.focus=this.value"></div>
       <div class="ob-actions">
         <button class="ob-btn grow" id="ob-gen" onclick="obGenerate()"
-                ${OB.loading ? "disabled" : ""}>${OB.loading ? "🪄 生成中…" : "🪄 生成我的专属词云"}</button>
+                ${OB.loading ? "disabled" : ""}>${OB.loading ? "🪄 生成中…"
+                  : (pfReady ? "✨ 词云已就绪 · 点击进入" : "🪄 生成我的专属词云")}</button>
         ${OB.loading ? `<button class="ob-btn ghost" onclick="obCancelGen()">✖ 取消</button>` : ""}
         <button class="ob-btn ghost" onclick="closeModal()">跳过引导</button></div>
       ${OB.error ? `<div class="ob-preview">⚠️ ${esc(OB.error)}——可直接跳过引导，用左侧表单检索</div>` : ""}</div>`;
     if (!OB.loading) $("#ob-topic").value = OB.topic;
+    obSchedulePrefetch(500);                     // 打开向导/切换画像后自动预热
     return;
   }
   if (OB.step === 2) {
@@ -951,14 +986,30 @@ function obRender() {
           ${esc(x.t.term_zh)} ${esc(x.t.term_en)}</span>`).join("")}</div>`;
     }).join("");
     const t = OB.openTerm >= 0 ? terms[OB.openTerm] : null;
-    const card = t ? `<div class="ob-termcard" style="border-left:4px solid ${catOf(t).color}">
+    // 解释懒加载（方案2）：点击术语时才生成，避免词云请求拖着 70% 的输出 tokens
+    let card;
+    if (!t) {
+      card = `<div class="ob-termcard">👆 点击任意词查看解释，选中后将与主题一起进入检索规划</div>`;
+    } else {
+      const i = OB.openTerm;
+      let explHtml;
+      if (t.explanation) {
+        explHtml = esc(t.explanation);
+      } else if (OB.explFail[i]) {
+        explHtml = `⚠️ 解释生成失败 <button class="ob-btn ghost" style="padding:2px 10px;font-size:11px"
+          onclick="OB.explFail[${i}]=false;obExplain(${i})">重试</button>`;
+      } else {
+        explHtml = `⏳ 解释生成中…（首次点击需 2~4 秒，之后缓存秒回）`;
+        setTimeout(() => obExplain(i), 0);
+      }
+      card = `<div class="ob-termcard" style="border-left:4px solid ${catOf(t).color}">
         <b>${esc(t.term_zh)} · ${esc(t.term_en)}</b>
         <span style="color:${catOf(t).color}">［${(catOf(t).label || "术语").split(" · ")[0]} · 相关度 ${t.weight}/10］</span><br>
-        ${esc(t.explanation)}<br>
+        ${explHtml}<br>
         <button class="ob-btn" style="padding:5px 12px;font-size:12px;margin-top:6px"
           onclick="OB.sel.has(${OB.openTerm})?OB.sel.delete(${OB.openTerm}):OB.sel.add(${OB.openTerm});obRender()">
-          ${OB.sel.has(OB.openTerm) ? "✓ 已加入检索词（点击移除）" : "＋ 加入检索词"}</button></div>`
-      : `<div class="ob-termcard">👆 点击任意词查看解释，选中后将与主题一起进入检索规划</div>`;
+          ${OB.sel.has(OB.openTerm) ? "✓ 已加入检索词（点击移除）" : "＋ 加入检索词"}</button></div>`;
+    }
     const chips = [...OB.sel].map(i => `<span class="ob-chip">${esc(terms[i].term_zh)}</span>`).join("");
     const legend = Object.keys(OB_CAT).map(c =>
       `<span><i style="background:${OB_CAT[c].color}"></i>${OB_CAT[c].label.split(" · ")[0]}</span>`).join("");
@@ -1009,6 +1060,8 @@ async function obGenerate() {
   OB.topic = $("#ob-topic").value.trim()
     .replace(/[（(]重点关注[:：].*?[）)]/g, "").trim();
   if (!OB.topic) { OB.error = "请先输入研究主题"; obRender(); return; }
+  const key = obPfKey();
+  const prefetched = OB.pfCache[key];            // 方案1：预热已就绪/进行中 → 直接复用
   OB.loading = true; OB.error = ""; OB.t0 = Date.now();
   OB.ctl = new AbortController();
   // 计时器：让用户看到"真的在动"，不再像卡死（2026-11-22修复）
@@ -1019,19 +1072,45 @@ async function obGenerate() {
   }, 1000);
   obRender();
   try {
-    OB.glossary = await api("/api/glossary", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic: OB.topic, identity: OB.identity, stage: OB.stage }),
-      timeoutMs: 90000, signal: OB.ctl.signal
-    });
+    if (prefetched) {
+      OB.glossary = await prefetched;            // 预热失败时返回 null → 走下方错误分支
+      if (!OB.glossary) throw new Error("预热生成未完成，请重新点击生成");
+    } else {
+      OB.glossary = await api("/api/glossary", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topic: OB.topic, identity: OB.identity, stage: OB.stage }),
+        timeoutMs: 90000, signal: OB.ctl.signal
+      });
+    }
+    OB.pfState[key] = "ready";
     OB.step = 2; OB.openTerm = -1;
   } catch (e) {
     OB.error = e.name === "AbortError" ? "已取消生成"
              : (e.message || "词云生成失败");
+    if (prefetched) delete OB.pfCache[key];      // 预热结果失败 → 清缓存以便重试
   }
   clearInterval(OB.tick); OB.loading = false; obRender();
 }
 function obCancelGen() { if (OB.ctl) OB.ctl.abort(); }
+/* ---- 术语解释懒加载（方案2）：单术语按需生成，带缓存重复点击秒回 ---- */
+async function obExplain(i) {
+  const t = OB.glossary && OB.glossary.terms[i];
+  if (!t || t.explanation || OB.explBusy[i]) return;
+  OB.explBusy[i] = true;
+  try {
+    const r = await api("/api/term-explain", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic: OB.topic, identity: OB.identity,
+        term_zh: t.term_zh, term_en: t.term_en, category: t.category }),
+      timeoutMs: 30000
+    });
+    t.explanation = r.explanation || "";
+  } catch (e) {
+    OB.explFail[i] = true;                       // 失败显示重试按钮，不自动循环重试
+  }
+  OB.explBusy[i] = false;
+  obRender();
+}
 function obStartRun() {
   const names = [...OB.sel].map(i => OB.glossary.terms[i].term_zh);
   // 保存中英对照术语（中转页据此做论文关键词命中分析）
@@ -1208,7 +1287,7 @@ function brShowPapers() {
           ${p.claims_n ? `· 已提取 ${p.claims_n} 条声明` : ""}</div></div>
         ${p.score ? `<span class="br-score" title="关键词命中得分：标题 3 分/个，摘要 1 分/个">命中 ${p.score} 分</span>` : ""}</div>
       ${hits ? `<div class="br-hits" style="max-width:100%;justify-content:flex-start;margin:7px 0 0">${hits}</div>` : ""}
-      ${p.abstract ? `<details class="br-abs"><summary>▸ 摘要（前 180 字）</summary>${esc(p.abstract)}…</details>` : ""}
+      ${p.abstract ? `<details class="br-abs"><summary>▸ 摘要（${esc(p.abstract_label || "前 180 字")}）</summary>${esc(p.abstract)}${p.abstract_truncated === false ? "" : "…"}</details>` : ""}
     </div>`;
   }).join("");
   el.classList.remove("hidden");
