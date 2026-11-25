@@ -2100,22 +2100,22 @@ function renderBlind() {
     const unc = k4.uncovered || [];
     const sup = (cov.verdict_distribution || {}).supported || 0;
     head = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:2px 0 12px">` +
-      stat(Math.round((k4.coverage_rate || 0) * 100) + "%", "K4 报告覆盖率") +
+      stat(Math.round((k4.coverage_rate || 0) * 100) + "%", "报告覆盖率") +
       stat(cov.total_papers || 0, "检索论文") +
       stat(unc.length, "未覆盖论文", unc.length ? "bad" : "") +
       stat(sup, "可信声明") + `</div>`;
     if (unc.length) {
-      head += `<details class="expander"><summary>⚠️ K4 反向校验：${unc.length} 篇论文未在报告正文出现（点击展开）</summary>
+      head += `<details class="expander"><summary>⚠️ ${unc.length} 篇论文未在报告正文出现（点击展开）</summary>
         <div class="exp-body">` + unc.map(u =>
         `<div class="paper-card"><div class="paper-num" style="background:linear-gradient(135deg,#b91c1c,#ef4444)">!</div>
           <div class="paper-main"><div class="paper-title">${esc(u.title)}</div>
-          <div class="paper-meta">arXiv:${esc(u.arxiv_id)} · ${esc(u.reason || "报告正文未引用该论文")}</div></div></div>`
+          <div class="paper-meta">arXiv:${esc(u.arxiv_id)}</div></div></div>`
       ).join("") + `</div></details>`;
     }
   }
   $("#tab-blind").innerHTML = head +
     (md ? `<div class="md">${marked.parse(md)}</div>`
-        : `<div class="empty">暂无盲区报告——流水线完成后自动生成（output/blindspots.md）。${cov ? "下方/上方为本次任务的覆盖统计数据。" : ""}</div>`);
+        : `<div class="empty">暂无盲区报告——流水线完成后自动生成</div>`);
 }
 
 /* ---- 标签: 矛盾与张力 ---- */
